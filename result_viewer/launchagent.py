@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-LABEL = "com.ruidong.result-viewer"
+LABEL = "com.hokyung.result-viewer"
 PLIST = Path("~/Library/LaunchAgents").expanduser() / f"{LABEL}.plist"
 LOG = Path("~/Library/Logs/result-viewer.log").expanduser()
 REPO = Path(__file__).resolve().parent.parent

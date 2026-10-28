@@ -8,7 +8,7 @@ from result_viewer import electro_gui
 from result_viewer.notebook import Notebooks, clean_tags, render_markdown
 from result_viewer.settings import DEFAULTS, load_settings
 
-SID = "sub-Test_ses-2026_01_02"
+SID = "Test_20260102"
 TAGS = DEFAULTS["tags"]
 SNAP = {"quality": "noise", "area": "acc", "peak_channel": 22, "depth_um": 220,
         "figure": "unit_0004_noise_Test_20260102_acc_rates_raster.png"}

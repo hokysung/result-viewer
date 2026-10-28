@@ -80,16 +80,10 @@ class LauncherTest(unittest.TestCase):
         self.assertIn("no electro_gui package", electro_gui.Launcher(self.url, "/x", self.repo / "nope", sys.executable).problem())
         self.assertEqual(electro_gui.Launcher(self.url, "/x", Path(self.tmp.name) / "nope", sys.executable).start()["started"], False)
 
-    def test_defaults_electrogui_checkout_and_its_presentation_folder(self):
-        dropbox = Path(self.tmp.name) / "Dropbox"
-        with mock.patch.object(electro_gui, "dropbox_root", return_value=dropbox):
-            launcher = electro_gui.Launcher(self.url, "/x", python=sys.executable)
-        self.assertEqual(launcher.repo, Path("~/code/electrogui").expanduser())
-        self.assertEqual(launcher.config_args(), [
-            "--config-dir", str(dropbox / "projects" / "analysis_imitation" / "data" / "output" / "presentation"),
-            "--config-dir", "/x"])
-        with mock.patch.object(electro_gui, "dropbox_root", return_value=None):  # no Dropbox: the viewer's folder only
-            self.assertEqual(electro_gui.Launcher(self.url, "/x").config_args(), ["--config-dir", "/x"])
+    def test_defaults_electrogui_checkout_and_only_the_notebook_configs(self):
+        launcher = electro_gui.Launcher(self.url, "/x", python=sys.executable)
+        self.assertEqual(launcher.repo, Path("~/Code/electrogui").expanduser())
+        self.assertEqual(launcher.config_args(), ["--config-dir", "/x"])
 
 
 def dash_app(id_, port, status="up", command=None, started="2026-10-09T20:07:21Z", host="127.0.0.1",
@@ -99,7 +93,7 @@ def dash_app(id_, port, status="up", command=None, started="2026-10-09T20:07:21Z
     ``served``: the https port ``tailscale serve`` proxies to ``port``; ``launchd``: the
     LaunchAgent's program.  A stopped app (status other than up) has no process.
     """
-    command = command or f"/envs/imitation-phys/bin/python -m electro_gui --no-browser --port {port}"
+    command = command or f"/envs/phys-viewer/bin/python -m electro_gui --no-browser --port {port}"
     routes = [{"url": f"https://node.tail0000.ts.net:{served}/", "kind": "proxy", "target": f"http://127.0.0.1:{port}",
                "stale": False}] if served else []
     return {"id": id_, "status": status, "peer": peer, "local": {"url": f"http://{host}:{port}/", "port": port},
@@ -168,7 +162,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual((found["tailnet"], found["behind"]), ("https://node.tail0000.ts.net:8778/", "http://127.0.0.1:8778"))
         # stopped: still linked (found by its LaunchAgent), and the dot asks the loopback URL behind it
         stopped = dash_app("electrogui", 8778, status="down", served=8778,
-                           launchd="/envs/imitation-phys/bin/python -m electro_gui --port 8778")
+                           launchd="/envs/phys-viewer/bin/python -m electro_gui --port 8778")
         found = pick([stopped])
         self.assertEqual((found["local"], found["tailnet"], found["behind"]),
                          (None, "https://node.tail0000.ts.net:8778/", "http://127.0.0.1:8778"))

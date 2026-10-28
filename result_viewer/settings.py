@@ -1,8 +1,8 @@
-"""Where the data lives, and ``<data>/settings.json`` (shared through Dropbox).
+"""Where the notebooks live, and ``<data>/settings.json`` (put the data dir in a synced folder to share it).
 
 ``settings.json`` holds what every machine should agree on::
 
-    {"tags": ["interesting", "block", "intention", "joystick", "eye", "noise"],
+    {"tags": ["interesting", "stim", "task", "pursuit", "saccade", "reward", "drift", "noise"],
      "electro_gui": {"url": "http://127.0.0.1:8765", "remote_url": ""}}
 
 ``tags`` are toggled by the number keys in this order (at most nine).
@@ -25,31 +25,17 @@ from .notebook import write_atomic
 PROJECT = "result-viewer"
 MAX_TAGS = 9
 DEFAULTS = {
-    "tags": ["interesting", "block", "intention", "joystick", "eye", "noise"],
+    "tags": ["interesting", "stim", "task", "pursuit", "saccade", "reward", "drift", "noise"],
     "electro_gui": {"url": "http://127.0.0.1:8765", "remote_url": ""},
 }
 
 
-def dropbox_root():
-    """The MIT (business) Dropbox folder from ``~/.dropbox/info.json``, else None."""
-    try:
-        with Path("~/.dropbox/info.json").expanduser().open("r", encoding="utf-8") as handle:
-            info = json.load(handle)
-        return Path(info["business"]["path"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
 def find_data_dir(explicit=None):
-    """``--data-dir``, else ``$RESULT_VIEWER_DATA``, else ``<MIT Dropbox>/projects/result-viewer/data``."""
+    """``--data-dir``, else ``$RESULT_VIEWER_DATA``, else ``~/result-viewer-data``."""
     for candidate in (explicit, os.environ.get("RESULT_VIEWER_DATA")):
         if candidate:
             return Path(candidate).expanduser()
-    root = dropbox_root()
-    if root is not None:
-        return root / "projects" / PROJECT / "data"
-    found = sorted(Path("~").expanduser().glob(f"MIT Dropbox/*/projects/{PROJECT}/data"))
-    return found[0] if found else None
+    return Path("~/result-viewer-data").expanduser()
 
 
 def load_settings(data_dir):

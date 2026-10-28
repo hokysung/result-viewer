@@ -1,22 +1,19 @@
-"""Find sessions, units and per-unit figures in Engaging result trees.
+"""Find sessions, units and per-unit figures under a viewer-sessions root.
 
-A results root holds one directory per session, laid out by analysis_imitation:
+A root holds one directory per session, as phys-analysis ``python -m session_viewer build`` writes it:
 
-    <root>/<sid>/analysis/figures/unit_rasters/unit_NNNN_<q>_<tag>_<area>_rates_raster.png
-    <root>/<sid>/analysis/figures/<kind>/unit_NNNN_<q>_<tag>_<area>.png
-    <root>/<sid>/analysis/figures/<kind>_unit_NNNN_<q>_<tag>_<area>.png
-    <root>/<sid>/preprocessing/figures/unit_summaries/unit_NNNN_<q>.jpg
-    <root>/<sid>/analysis/tables/unit_NNNN_rates_summary.json
+    <root>/<sid>/session.h5
+    <root>/<sid>/figures/unit_rasters/unit_NNNN_<q>_<tag>_<area>_rates_raster.png
+    <root>/<sid>/figures/<kind>/unit_NNNN_<q>_<tag>_<area>.png
+    <root>/<sid>/figures/<kind>_unit_NNNN_<q>_<tag>_<area>.png
+    <root>/<sid>/figures/unit_summaries/unit_NNNN_<q>.jpg
+    <root>/<sid>/tables/units.csv
 
-    <root>/<sid>/analysis/tables/stability_per_unit.csv
-
-``<tag>`` is ``imitation_phys.naming.session_tag`` (``Ravel_20260915`` for
-``sub-Ravel_ses-2026_09_15``).  A unit is one NWB unit id; its rate raster
-defines it.  Figures are not redrawn when units are relabelled (``mua`` ->
-``noise``), so a file name can carry an old label and a unit can have several
-rasters that differ only in the quality token.  The current label is the
-stability table's (written by the same run that assembles the session NWB);
-without it, the rates summary JSON's, then the newest file's.
+``<sid>`` is ``<Subject>_<YYYYMMDD>`` and ``<tag>`` is the same string.  A unit is
+one unit id of ``session.h5``; its rate raster defines it.  ``tables/units.csv``
+(written with ``session.h5``) gives each unit's current label, rate, stable
+trials, peak channel and depth.  A raster whose file name carries another label
+than the table's is shown as relabelled.
 """
 from __future__ import annotations
 
@@ -27,25 +24,25 @@ import re
 import threading
 from pathlib import Path
 
-DEFAULT_ROOTS = ("/Volumes/T7/engaging-results", "/Volumes/Transfer/engaging_results")
+DEFAULT_ROOTS = tuple(p for p in os.environ.get("SESSION_VIEWER_ROOTS", "").split(os.pathsep) if p) or (
+    os.path.expanduser("~/viewer_sessions"),)
 
-RASTER_DIR = ("analysis", "figures", "unit_rasters")
-FIGURES_DIR = ("analysis", "figures")
-SUMMARIES_DIR = ("preprocessing", "figures", "unit_summaries")
-TABLES_DIR = ("analysis", "tables")
-NWB_DIR = ("analysis", "nwb")
-STABILITY_TABLE = "stability_per_unit.csv"
+RASTER_DIR = ("figures", "unit_rasters")
+FIGURES_DIR = ("figures",)
+SUMMARIES_DIR = ("figures", "unit_summaries")
+TABLES_DIR = ("tables",)
+STABILITY_TABLE = "units.csv"
+SESSION_FILE = "session.h5"
 RASTER_SUFFIX = "_rates_raster.png"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
 # Figure folders that hold no per-unit figures, or none of the raster's kind.
-SKIP_FIGURE_DIRS = {"unit_rasters", "trial_video"}
+SKIP_FIGURE_DIRS = {"unit_rasters", "unit_summaries"}
 
 RASTER_KIND = "raster"
 SORTER_KIND = "sorter_summary"
-KIND_LABELS = {RASTER_KIND: "Raster", SORTER_KIND: "Sorter summary", "object_outcome_unit_psth": "Object outcome PSTH",
-               "selectivity_classes": "Selectivity"}
+KIND_LABELS = {RASTER_KIND: "Raster", SORTER_KIND: "Sorter summary"}
 
-_SESSION_ID_RE = re.compile(r"^sub-(?P<subject>[^_]+)_ses-(?P<date>[0-9][0-9_\-]*)")
+_SESSION_ID_RE = re.compile(r"^(?P<subject>[A-Za-z0-9-]+)_(?P<date>[0-9]{8})$")
 _SLUG = r"[a-z0-9-]+"
 
 
@@ -54,7 +51,7 @@ def _sanitize(text):
 
 
 def session_tag(session_id):
-    """``sub-Ravel_ses-2026_08_26`` -> ``Ravel_20260826`` (mirrors imitation_phys.naming.session_tag)."""
+    """``Nielsen_20261015`` -> ``Nielsen_20261015`` (session_viewer.rasters.unit_stem); anything else sanitized."""
     match = _SESSION_ID_RE.match(session_id or "")
     if match:
         return f"{_sanitize(match['subject'])}_{re.sub(r'[^0-9]', '', match['date'])}"
@@ -132,12 +129,10 @@ def _current_quality(session_dir, unit_id):
 def _stability(session_dir):
     """``{unit_id: {quality, rate_hz, n_stable, n_trials, full_stable}}``, or None without a table.
 
-    ``tables/stability_per_unit.csv`` has one row per unit of the session NWB and
-    is written minutes before that NWB is assembled, so its labels are current:
-    in 09_15 they agree with the NWB on all 875 units, while 155 raster file
-    names still carry the label from before the 09-30 relabel.  A unit missing
-    from it is not in the current NWB.  ``full_stable``: stable on every
-    completed trial (``n_stable_trials == n_completed_trials``).
+    ``tables/units.csv`` has one row per unit of ``session.h5`` and is written
+    with it, so its labels are current even when a raster file name is older.
+    A unit missing from it is not in the current export.  ``full_stable``:
+    stable on every completed trial (``n_stable_trials == n_completed_trials``).
     """
     path = session_dir.joinpath(*TABLES_DIR, STABILITY_TABLE)
     try:
@@ -160,39 +155,29 @@ def _stability(session_dir):
 
 
 def _channels(session_dir, sid):
-    """``{unit_id: {"peak_channel", "depth_um"}}`` from the first per-unit table that has them.
+    """``{unit_id: {"peak_channel", "depth_um"}}`` from ``tables/units.csv``.
 
-    Only a table written after the session NWB counts: an older one can describe
-    an earlier build of the units (09_15's tables put unit 4 on channel 22, the
-    current NWB on 28), and a wrong channel is worse than none.
+    Only when the table is at least as new as ``session.h5``: an older one can
+    describe an earlier export of the units, and a wrong channel is worse than none.
     """
+    table = session_dir.joinpath(*TABLES_DIR, STABILITY_TABLE)
     try:
-        nwb_mtime = session_dir.joinpath(*NWB_DIR, f"{sid}_session.nwb").stat().st_mtime
+        if table.stat().st_mtime < session_dir.joinpath(SESSION_FILE).stat().st_mtime:
+            return {}
+        with table.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames or "unit_id" not in reader.fieldnames or "peak_channel" not in reader.fieldnames:
+                return {}
+            out = {}
+            for row in reader:
+                try:
+                    uid = int(float(row["unit_id"]))
+                except (TypeError, ValueError):
+                    continue
+                out[uid] = {"peak_channel": _number(row.get("peak_channel")), "depth_um": _number(row.get("depth_um"))}
+            return out
     except OSError:
         return {}
-    tables = session_dir.joinpath(*TABLES_DIR)
-    names = sorted(name for name, _ in _scan(tables) if name.endswith("_units.csv"))
-    # Prefer the table written for every unit; the others cover subsets.
-    names.sort(key=lambda n: (not n.startswith("action_value_variance"), n))
-    for name in names:
-        try:
-            if (tables / name).stat().st_mtime < nwb_mtime:
-                continue
-            with (tables / name).open("r", encoding="utf-8", newline="") as handle:
-                reader = csv.DictReader(handle)
-                if not reader.fieldnames or "unit_id" not in reader.fieldnames or "peak_channel" not in reader.fieldnames:
-                    continue
-                out = {}
-                for row in reader:
-                    try:
-                        uid = int(float(row["unit_id"]))
-                    except (TypeError, ValueError):
-                        continue
-                    out[uid] = {"peak_channel": _number(row.get("peak_channel")), "depth_um": _number(row.get("depth_um"))}
-                return out
-        except OSError:
-            continue
-    return {}
 
 
 def _number(text):

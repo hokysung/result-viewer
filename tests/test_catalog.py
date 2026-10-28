@@ -18,8 +18,8 @@ class CatalogTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_session_tag_matches_imitation_phys(self):
-        self.assertEqual(session_tag("sub-Ravel_ses-2026_08_26"), "Ravel_20260826")
+    def test_session_tag_is_the_session_id(self):
+        self.assertEqual(session_tag("Nielsen_20261015"), "Nielsen_20261015")
         self.assertEqual(session_tag("odd session!"), "odd-session")
 
     def test_units_come_from_rasters_only(self):
@@ -49,7 +49,7 @@ class CatalogTest(unittest.TestCase):
         self.assertIsNone(four["rate_hz"])
 
     def test_without_a_stability_table(self):
-        (self.root / SID / "analysis" / "tables" / "stability_per_unit.csv").unlink()
+        (self.root / SID / "tables" / "units.csv").unlink()
         units = {u["id"]: u for u in Catalog([self.root]).session(SID)["units"]}
         self.assertEqual(units[3]["quality"], "sua")  # no table, no summary: the newest raster
         self.assertEqual(units[2]["quality"], "noise")  # the rates summary
@@ -70,9 +70,9 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(self.units[2]["depth_um"], 1400.5)
         self.assertIsNone(self.units[3]["peak_channel"])
 
-    def test_channels_from_a_table_older_than_the_nwb_are_ignored(self):
+    def test_channels_from_a_table_older_than_the_session_file_are_ignored(self):
         import os
-        table = self.root / SID / "analysis" / "tables" / "action_value_variance_units.csv"
+        table = self.root / SID / "tables" / "units.csv"
         os.utime(table, (1_000_000_000, 1_000_000_000))
         os.utime(table.parent.parent / "figures" / "unit_rasters", None)  # invalidate the cache
         units = {u["id"]: u for u in Catalog([self.root]).session(SID)["units"]}
@@ -83,9 +83,7 @@ class CatalogTest(unittest.TestCase):
         kinds = [v["kind"] for v in self.session["views"]]
         self.assertEqual(kinds[:2], ["raster", "sorter_summary"])
         self.assertEqual(kinds[2:], sorted(kinds[2:]))
-        self.assertNotIn("trial_video", kinds)
-        self.assertEqual(kind_label("selectivity_classes_onset_movelocked_peri"), "Selectivity · onset movelocked peri")
-        self.assertEqual(kind_label("object_outcome_unit_psth"), "Object outcome PSTH")
+        self.assertEqual(kind_label("selectivity_classes_onset"), "Selectivity classes onset")
 
     def test_figure_urls_resolve_inside_the_root_only(self):
         url = self.units[1]["figures"]["raster"]["url"]
@@ -93,21 +91,21 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(index, "1")
         self.assertTrue(self.catalog.resolve_figure(index, rel).is_file())
         self.assertIsNone(self.catalog.resolve_figure("1", f"{SID}/../../outside.png"))
-        self.assertIsNone(self.catalog.resolve_figure("1", f"{SID}/analysis/tables/unit_0002_rates_summary.json"))
+        self.assertIsNone(self.catalog.resolve_figure("1", f"{SID}/tables/unit_0002_rates_summary.json"))
         self.assertIsNone(self.catalog.resolve_figure("7", rel))
         self.assertIsNone(self.catalog.resolve_figure("x", rel))
 
     def test_first_root_wins_and_folders_without_rasters_are_skipped(self):
         first = Path(self.tmp.name) / "first"
         make_session(first)
-        (self.root / "sub-Other_ses-2026_01_03" / "analysis").mkdir(parents=True)
-        (self.root / ".fetch-staging" / "analysis" / "figures" / "unit_rasters").mkdir(parents=True)
+        (self.root / "Other_20260103" / "tables").mkdir(parents=True)
+        (self.root / ".partial" / "figures" / "unit_rasters").mkdir(parents=True)
         catalog = Catalog([first, self.root])
         self.assertEqual(list(catalog.sessions()), [SID])
         self.assertEqual(catalog.session(SID)["root_index"], 0)
 
     def test_cache_notices_new_figures(self):
-        rasters = self.root / SID / "analysis" / "figures" / "unit_rasters"
+        rasters = self.root / SID / "figures" / "unit_rasters"
         touch(rasters / "unit_0010_mua_Test_20260102_acc_rates_raster.png")
         import os
         st = rasters.stat()

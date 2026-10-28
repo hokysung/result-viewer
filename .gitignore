@@ -3,3 +3,4 @@ __pycache__/
 .threads
 .claude/
 .DS_Store
+.claude/worktrees/

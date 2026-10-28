@@ -16,11 +16,11 @@ DEFAULT_PORT = 8766
 
 def _add_serve_args(parser):
     parser.add_argument("--root", action="append", metavar="DIR",
-                        help="results root holding <sid>/analysis/... (repeatable; first match wins; "
+                        help="viewer-sessions root holding <Subject>_<YYYYMMDD>/ (repeatable; first match wins; "
                              f"default: {', '.join(DEFAULT_ROOTS)})")
     parser.add_argument("--data-dir", metavar="DIR",
                         help="notes/settings folder (default: $RESULT_VIEWER_DATA or "
-                             "<MIT Dropbox>/projects/result-viewer/data)")
+                             "~/result-viewer-data)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"loopback port (default {DEFAULT_PORT})")
     parser.add_argument("--host", default="127.0.0.1", help="loopback address to bind (default 127.0.0.1)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
@@ -34,7 +34,7 @@ def _add_serve_args(parser):
     parser.add_argument("--electro-gui-repo", metavar="DIR",
                         help="electrogui checkout to start electro_gui from (default ~/code/electrogui)")
     parser.add_argument("--electro-gui-python", metavar="PATH",
-                        help="Python to start electro_gui with (default: the first imitation-phys env found)")
+                        help="Python to start electro_gui with (default: the first phys-viewer env found)")
     parser.add_argument("--owner", metavar="LOGIN",
                         help="tailnet login allowed through tailscale serve (default: this node's owner)")
     parser.add_argument("--allow-host", action="append", default=[], metavar="NAME",
@@ -44,7 +44,7 @@ def _add_serve_args(parser):
 def _data_dir(args):
     data_dir = find_data_dir(args.data_dir)
     if data_dir is None:
-        sys.exit("Cannot find the MIT Dropbox folder; pass --data-dir or set RESULT_VIEWER_DATA.")
+        sys.exit("No notes folder; pass --data-dir or set RESULT_VIEWER_DATA.")
     if not data_dir.parent.is_dir():
         sys.exit(f"{data_dir.parent} does not exist (is Dropbox running?); pass --data-dir to use another folder.")
     data_dir.mkdir(exist_ok=True)

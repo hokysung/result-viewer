@@ -1,4 +1,4 @@
-"""Hand units to electro_gui (~/code/electrogui, github.com/chenruidong/electrogui).
+"""Hand units to electro_gui (~/Code/electrogui, github.com/hokysung/electrogui).
 
 Four ways, none of which needs a change to electro_gui:
 
@@ -34,15 +34,14 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .notebook import unit_heading, utc_now, write_atomic
-from .settings import dropbox_root
 
 GENERATOR = "result-viewer"
 NESTED = "electro_gui_configs"
 DEFAULT_QUALITIES = ("sua", "mua")
-DEFAULT_REPO = "~/code/electrogui"
-PYTHON_CANDIDATES = ("~/miniconda/envs/imitation-phys/bin/python", "~/miniforge3/envs/imitation-phys/bin/python",
-                     "~/miniconda3/envs/imitation-phys/bin/python", "~/mambaforge/envs/imitation-phys/bin/python",
-                     "~/anaconda3/envs/imitation-phys/bin/python")
+DEFAULT_REPO = "~/Code/electrogui"
+ENV_NAME = "phys-viewer"
+PYTHON_CANDIDATES = tuple(f"~/{base}/envs/{ENV_NAME}/bin/python"
+                          for base in ("miniconda3", "miniforge3", "miniconda", "mambaforge", "anaconda3"))
 START_LOG = "~/Library/Logs/electro_gui.log"
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DASHBOARD_URL = "http://127.0.0.1:8790"
@@ -222,9 +221,8 @@ def _served_at(routes, port):
 
 
 def presentation_dir():
-    """electro_gui's default config folder (its ``paths.presentation_dir``), or None without Dropbox."""
-    root = dropbox_root()
-    return root / "projects" / "analysis_imitation" / "data" / "output" / "presentation" if root else None
+    """electro_gui has no default config folder; only the notebook's configs are passed."""
+    return None
 
 
 class Launcher:
@@ -237,7 +235,7 @@ class Launcher:
     restart, with its output appended to ``~/Library/Logs/electro_gui.log``.
     ``--config-dir`` replaces electro_gui's default folder rather than adding to
     it, so that default is passed too (``config_dirs`` replaces it here).  Only a
-    loopback ``url`` is started; the Python is the first imitation-phys
+    loopback ``url`` is started; the Python is the first ``phys-viewer``
     environment found unless one is given.
     """
 
@@ -271,7 +269,7 @@ class Launcher:
         if not (self.repo / "electro_gui" / "__main__.py").is_file():
             return f"no electro_gui package in {self.repo}"
         if self.python is None or not self.python.is_file():
-            return "no imitation-phys Python found (pass --electro-gui-python)"
+            return f"no {ENV_NAME} Python found (pass --electro-gui-python)"
         return None
 
     def config_args(self):

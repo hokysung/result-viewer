@@ -1,4 +1,4 @@
-"""Per-session unit notebooks kept in MIT Dropbox.
+"""Per-session unit notebooks kept in the data dir (a synced folder if shared between machines).
 
 ``<data>/notes/<sid>.json`` is the source of truth::
 

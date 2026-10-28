@@ -120,7 +120,7 @@ class ServerTest(unittest.TestCase):
         status, body = self.get_json(f"/api/session?sid={SID}")
         self.assertEqual(status, 200)
         self.assertEqual([u["id"] for u in body["session"]["units"]], [1, 2, 3, 4])
-        self.assertEqual(self.get_json("/api/session?sid=sub-None_ses-2026_01_01")[0], 404)
+        self.assertEqual(self.get_json("/api/session?sid=None_20260101")[0], 404)
         self.assertEqual(self.get_json("/api/session?sid=../x")[0], 400)
 
     def test_figures(self):
