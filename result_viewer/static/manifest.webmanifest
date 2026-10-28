@@ -1,7 +1,7 @@
 {
   "name": "Unit Raster Viewer",
   "short_name": "Rasters",
-  "description": "Flip through per-unit rasters of the Engaging results and keep a notebook per session",
+  "description": "Flip through per-unit rasters of exported recording sessions and keep a notebook per session",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

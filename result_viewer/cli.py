@@ -46,7 +46,7 @@ def _data_dir(args):
     if data_dir is None:
         sys.exit("No notes folder; pass --data-dir or set RESULT_VIEWER_DATA.")
     if not data_dir.parent.is_dir():
-        sys.exit(f"{data_dir.parent} does not exist (is Dropbox running?); pass --data-dir to use another folder.")
+        sys.exit(f"{data_dir.parent} does not exist; pass --data-dir to use another folder.")
     data_dir.mkdir(exist_ok=True)
     return data_dir
 

@@ -15,7 +15,7 @@ changed.  ``<sid>.md`` is regenerated from the JSON on every save, for reading
 anywhere; edits made to it are overwritten.
 
 Every save re-reads the file and changes only the one unit, so notes taken on
-two machines merge as long as Dropbox has synced between them.  Dropbox's
+two machines merge as long as the folder has synced between them.  A sync tool's
 "conflicted copy" files are reported, never merged or removed.
 """
 from __future__ import annotations

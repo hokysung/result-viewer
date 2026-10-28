@@ -1,6 +1,6 @@
 /* result-viewer page: flip through per-unit figures, keep notes per session.
  *
- * The server owns the data (catalog + notebook JSON in Dropbox); this page keeps
+ * The server owns the data (catalog + notebook JSON in the data dir); this page keeps
  * a copy of the open session's notebook, applies edits optimistically and sends
  * them one at a time (POST /api/note), retrying while the network is away. */
 (() => {
