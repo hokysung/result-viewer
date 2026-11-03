@@ -921,6 +921,92 @@
   let resizeTimer = null;
   window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { renderStrip(); if (S.view === SESSION_VIEW.kind) renderSessionSvg(); }, 150); });
 
+  // ---------------------------------------------------------------- panels
+  /* figures/panels/<unit>/<key>.png, one PNG per alignment x condition (catalog: unit.figures.panels.panels,
+   * session.panels = manifest with title / group / desc in display order). Grid: every panel of the unit,
+   * 1-4 per row, filtered by group. Single: one panel, large; flipping units keeps it (`,` `.` step panels). */
+  S.panel = store.get('panel', null);
+  S.panelCols = store.get('panelCols', 3);
+  S.panelGroup = store.get('panelGroup', '');
+
+  const panelMeta = key => (S.session.panels || []).find(p => p.key === key) || {key, title: key.replace(/_/g, ' '), group: ''};
+  function unitPanels() {
+    const u = S.byId.get(S.cur), f = u && u.figures.panels;
+    return f ? f.panels : [];
+  }
+
+  function renderPanels() {
+    const pane = $('panelPane'), all = unitPanels();
+    if (!all.length) { pane.innerHTML = `<p class="muted">No panels for unit ${esc(S.cur)}. ] / [ for another figure.</p>`; return; }
+    const groups = [];
+    for (const p of all) { const g = panelMeta(p.key).group || ''; if (g && !groups.includes(g)) groups.push(g); }
+    const group = groups.includes(S.panelGroup) ? S.panelGroup : '';
+    const shown = all.filter(p => !group || panelMeta(p.key).group === group);
+    const single = S.panel && all.some(p => p.key === S.panel) ? S.panel : null;
+    let bar = '<div class="pbar">' +
+      `<span class="seg"><button type="button" data-pm="grid" aria-pressed="${!single}" title="All panels (p, Esc)">Grid</button>` +
+      `<button type="button" data-pm="single" aria-pressed="${!!single}" title="One panel, kept while you flip units (p)">Single</button></span>`;
+    if (single) {
+      bar += `<button type="button" class="icon" data-pstep="-1" title="Previous panel (,)">‹</button>` +
+        `<select data-pick aria-label="Panel">${all.map(p => `<option value="${esc(p.key)}"${p.key === single ? ' selected' : ''}>${esc((panelMeta(p.key).group ? panelMeta(p.key).group + ' · ' : '') + panelMeta(p.key).title)}</option>`).join('')}</select>` +
+        `<button type="button" class="icon" data-pstep="1" title="Next panel (.)">›</button>`;
+    } else {
+      bar += '<span class="seg" title="Panels per row">' + [1, 2, 3, 4].map(n => `<button type="button" data-cols="${n}" aria-pressed="${S.panelCols === n}">${n}</button>`).join('') + '</span>';
+      if (groups.length > 1) bar += `<span class="pgroups"><button class="chip" data-pg="" aria-pressed="${!group}">all ${all.length}</button>` +
+        groups.map(g => `<button class="chip" data-pg="${esc(g)}" aria-pressed="${g === group}">${esc(g)} ${all.filter(p => panelMeta(p.key).group === g).length}</button>`).join('') + '</span>';
+    }
+    bar += '</div>';
+    const card = (p, big) => {
+      const m = panelMeta(p.key);
+      return `<figure class="pcard${big ? ' big' : ''}" data-key="${esc(p.key)}"><figcaption><b>${esc(m.title)}</b>` +
+        `${m.group ? ` <span class="muted small">${esc(m.group)}</span>` : ''}${m.desc ? `<small class="muted">${esc(m.desc)}</small>` : ''}</figcaption>` +
+        `<img src="${esc(p.url)}" alt="${esc(m.title)} · unit ${esc(S.cur)}" loading="${big ? 'eager' : 'lazy'}" decoding="async"></figure>`;
+    };
+    pane.innerHTML = bar + (single
+      ? card(all.find(p => p.key === single), true)
+      : `<div class="pgrid" style="--cols:${isPhone() ? 1 : S.panelCols}">${shown.map(p => card(p, false)).join('')}</div>`);
+    preloadPanels();
+  }
+
+  function setPanel(key) {
+    S.panel = key;
+    store.set('panel', key);
+    if (S.view === 'panels') renderPanels();
+  }
+  function togglePanelMode() {
+    if (S.view !== 'panels') { setView('panels'); return; }
+    const all = unitPanels();
+    setPanel(S.panel ? null : (all[0] && all[0].key) || null);
+  }
+  function stepPanel(d) {
+    if (S.view !== 'panels') return;
+    const all = unitPanels();
+    if (!all.length) return;
+    let i = all.findIndex(p => p.key === S.panel);
+    i = i < 0 ? (d > 0 ? 0 : all.length - 1) : (i + d + all.length) % all.length;
+    setPanel(all[i].key);
+  }
+  function preloadPanels() {
+    if (!S.panel) return;
+    const ids = S.filtered, i = ids.indexOf(S.cur);
+    for (const d of [1, 2, -1]) {
+      const u = S.byId.get(ids[i + d]), f = u && u.figures.panels;
+      const p = f && f.panels.find(x => x.key === S.panel);
+      if (p) getImg(p.url);
+    }
+  }
+
+  $('panelPane').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b && b.dataset.pm) { setPanel(b.dataset.pm === 'grid' ? null : (S.panel || (unitPanels()[0] || {}).key || null)); return; }
+    if (b && b.dataset.pstep) { stepPanel(Number(b.dataset.pstep)); return; }
+    if (b && b.dataset.cols) { S.panelCols = Number(b.dataset.cols); store.set('panelCols', S.panelCols); renderPanels(); return; }
+    if (b && b.dataset.pg != null) { S.panelGroup = b.dataset.pg; store.set('panelGroup', S.panelGroup); renderPanels(); return; }
+    const c = e.target.closest('.pcard');
+    if (c && !c.classList.contains('big')) setPanel(c.dataset.key);
+  });
+  $('panelPane').addEventListener('change', e => { if (e.target.matches('select[data-pick]')) setPanel(e.target.value); });
+
   // ---------------------------------------------------------------- figure
   const imgCache = new Map();
   function getImg(url) {
@@ -941,10 +1027,12 @@
     const u = S.byId.get(S.cur), fig = u && u.figures[S.view];
     const img = $('img'), msg = $('figMsg'), box = $('figure');
     const mine = ++figSeq;
-    const onSession = S.view === SESSION_VIEW.kind;
-    box.hidden = onSession;
+    const onSession = S.view === SESSION_VIEW.kind, onPanels = S.view === 'panels';
+    box.hidden = onSession || onPanels;
     $('sessionPane').hidden = !onSession;
+    $('panelPane').hidden = !onPanels;
     renderStrip();
+    if (onPanels) { spinner(false); renderPanels(); return; }
     if (onSession) {
       spinner(false);
       if ($('tlBox')) renderSessionSvg(); else renderSession();  // a new unit: only its lane changes
@@ -1354,6 +1442,9 @@
       case 'n': case 'Enter': if (!isPhone()) togglePanels(false); noteBox.focus(); break;
       case 'g': case '/': openJump(); break;
       case 'z': toggleZoom(); break;
+      case ',': stepPanel(-1); break;
+      case '.': stepPanel(1); break;
+      case 'p': togglePanelMode(); break;
       case 'e': openEg(); break;
       case 'm': togglePanels(); break;
       case 's': cycleSort(); break;
@@ -1361,6 +1452,7 @@
       case '?': showHelp(); break;
       case 'Escape':
         if (S.zoom) toggleZoom(false);
+        else if (S.view === 'panels' && S.panel) setPanel(null);
         else if (document.body.classList.contains('drawer')) closeDrawer();
         else handled = false;
         break;

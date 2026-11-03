@@ -37,11 +37,17 @@ SESSION_FILE = "session.h5"
 RASTER_SUFFIX = "_rates_raster.png"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
 # Figure folders that hold no per-unit figures, or none of the raster's kind.
-SKIP_FIGURE_DIRS = {"unit_rasters", "unit_summaries"}
+SKIP_FIGURE_DIRS = {"unit_rasters", "unit_summaries", "panels"}
+# One folder per unit of separate panels (figures/panels/unit_NNNN_<q>_<tag>_<area>/<key>.png), described by
+# figures/panels/manifest.json: {"panels": [{"key", "title", "group", "desc"}, ...]} in display order.
+PANELS_DIR = ("figures", "panels")
+PANELS_MANIFEST = "manifest.json"
+PANELS_SESSION = "_session"       # figures/panels/_session/<key>.png: shown with every unit's panels
 
 RASTER_KIND = "raster"
 SORTER_KIND = "sorter_summary"
-KIND_LABELS = {RASTER_KIND: "Raster", SORTER_KIND: "Sorter summary"}
+PANELS_KIND = "panels"
+KIND_LABELS = {RASTER_KIND: "Raster", SORTER_KIND: "Sorter summary", PANELS_KIND: "Panels"}
 
 _SESSION_ID_RE = re.compile(r"^(?P<subject>[A-Za-z0-9-]+)_(?P<date>[0-9]{8})$")
 _SLUG = r"[a-z0-9-]+"
@@ -79,6 +85,7 @@ class _Patterns:
         self.figure = re.compile(rf"^{stem}\.(?:png|jpe?g)$")
         self.prefixed = re.compile(rf"^(?P<kind>[A-Za-z0-9_-]+?)_{stem}\.(?:png|jpe?g)$")
         self.summary = re.compile(rf"^unit_(?P<id>\d+)(?:_(?P<q>{_SLUG}))?\.(?:png|jpe?g)$")
+        self.panel_dir = re.compile(rf"^{stem}$")
 
 
 def _scan(directory):
@@ -100,7 +107,7 @@ def _mtime(entry):
 def _signature(session_dir):
     """Directory mtimes that change whenever a figure is added or removed."""
     dirs = [session_dir.joinpath(*RASTER_DIR), session_dir.joinpath(*FIGURES_DIR), session_dir.joinpath(*SUMMARIES_DIR),
-            session_dir.joinpath(*TABLES_DIR, STABILITY_TABLE)]
+            session_dir.joinpath(*TABLES_DIR, STABILITY_TABLE), session_dir.joinpath(*PANELS_DIR, PANELS_MANIFEST)]
     try:
         with os.scandir(session_dir.joinpath(*FIGURES_DIR)) as it:
             dirs += [Path(e.path) for e in it if e.is_dir() and not e.name.startswith(".")]
@@ -283,15 +290,57 @@ def scan_session(root_index, root, sid):
         if uid in units:
             units[uid].update(info)
 
+    manifest = _panels(root_index, root, session_dir, pat, units)
+
     kinds = {}
     for unit in units.values():
         for kind in unit["figures"]:
             kinds[kind] = kinds.get(kind, 0) + 1
-    order = [RASTER_KIND] + ([SORTER_KIND] if SORTER_KIND in kinds else [])
+    order = ([PANELS_KIND] if PANELS_KIND in kinds else []) + [RASTER_KIND] + ([SORTER_KIND] if SORTER_KIND in kinds else [])
     order += sorted(k for k in kinds if k not in order)
     return {"id": sid, "root": str(root), "root_index": root_index,
             "views": [{"kind": k, "label": kind_label(k), "n": kinds[k]} for k in order if k in kinds],
-            "units": [units[u] for u in sorted(units)]}
+            "panels": manifest, "units": [units[u] for u in sorted(units)]}
+
+
+def _panels(root_index, root, session_dir, pat, units):
+    """Attach ``figures["panels"]`` (``{"url", "name", "panels": [{"key", "url"}]}``) to every unit that has a panel
+    folder; return the manifest's panel list (titles, groups, order), or panels named by key without one."""
+    base = session_dir.joinpath(*PANELS_DIR)
+    try:
+        with (base / PANELS_MANIFEST).open("r", encoding="utf-8") as handle:
+            listed = json.load(handle).get("panels", [])
+        listed = [p for p in listed if isinstance(p, dict) and isinstance(p.get("key"), str)]
+    except (OSError, ValueError, AttributeError):
+        listed = []
+    try:
+        with os.scandir(base) as it:
+            folders = [e for e in it if e.is_dir() and not e.name.startswith(".")]
+    except OSError:
+        return listed
+    order = {p["key"]: i for i, p in enumerate(listed)}
+    seen = set()
+
+    def images(path):
+        return [(name[:name.rfind(".")], entry) for name, entry in _scan(path) if name.lower().endswith(IMAGE_EXTS)]
+
+    # panels shared by every unit (e.g. eye speed): figures/panels/_session/<key>.png
+    shared = next((images(f.path) for f in folders if f.name == PANELS_SESSION), [])
+    for folder in folders:
+        m = pat.panel_dir.match(folder.name)
+        if not m or int(m["id"]) not in units:
+            continue
+        own = images(folder.path)
+        mine = {key for key, _ in own}
+        files = own + [(key, entry) for key, entry in shared if key not in mine]
+        files.sort(key=lambda f: (order.get(f[0], len(order)), f[0]))
+        if not own:
+            continue
+        rel = lambda e: f"/fig/{root_index}/{Path(e.path).relative_to(root).as_posix()}"
+        panels = [{"key": key, "url": rel(entry)} for key, entry in files]
+        seen.update(key for key, _ in files)
+        units[int(m["id"])]["figures"][PANELS_KIND] = {"url": panels[0]["url"], "name": folder.name, "panels": panels}
+    return listed + [{"key": k, "title": k.replace("_", " "), "group": ""} for k in sorted(seen - set(order))]
 
 
 def _figure(root_index, root, entry, figure_quality, unit_quality):

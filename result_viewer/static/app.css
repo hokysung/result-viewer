@@ -357,3 +357,20 @@ svg.tl { display: block; max-width: 100%; cursor: crosshair; }
   .sp-log .ls { display: none; }
   .sp-legend { margin-left: 0; }
 }
+
+/* ---------------------------------------------------------------- panels */
+#panelPane { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 16px; }
+.pbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 8px; position: sticky; top: 0; z-index: 2;
+  background: var(--bg); padding: 4px 0; }
+.pbar .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.pbar select { max-width: 360px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 12px; }
+.pgroups { display: flex; flex-wrap: wrap; gap: 4px; }
+.pgrid { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px; }
+.pcard { margin: 0; background: var(--figure-bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px; cursor: zoom-in;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pcard:hover { border-color: var(--accent); }
+.pcard figcaption { font-size: 12px; color: #1d1d1f; display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; }
+.pcard figcaption small { flex-basis: 100%; }
+.pcard img { width: 100%; height: auto; display: block; }
+.pcard.big { cursor: default; max-width: 1100px; margin: 0 auto; }
+.pcard.big img { max-height: calc(100vh - 260px); object-fit: contain; }

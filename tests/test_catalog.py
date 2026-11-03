@@ -61,6 +61,27 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(four["metrics"], {})               # not in the units table
         json.dumps(self.units, allow_nan=False)
 
+    def test_panels_folder_per_unit_with_shared_session_panels(self):
+        base = self.root / SID / "figures" / "panels"
+        tag = SID
+        touch(base / f"unit_0001_sua_{tag}_acc" / "task_ms_target.png")
+        touch(base / f"unit_0001_sua_{tag}_acc" / "stim_ms_onset.png")
+        touch(base / f"unit_0001_sua_{tag}_acc" / "extra_panel.png")          # not in the manifest: last
+        touch(base / "_session" / "eye_ms.png")
+        touch(base / f"unit_0099_sua_{tag}_acc" / "stim_ms_onset.png")        # no such unit: ignored
+        (base / "manifest.json").write_text(json.dumps({"panels": [
+            {"key": "stim_ms_onset", "title": "MS onset", "group": "Stim"},
+            {"key": "eye_ms", "title": "MS eye", "group": "Stim", "session": True},
+            {"key": "task_ms_target", "title": "MS target", "group": "Task"}]}))
+        session = Catalog([self.root]).session(SID)
+        self.assertEqual(session["views"][0]["kind"], "panels")
+        panels = {u["id"]: u for u in session["units"]}[1]["figures"]["panels"]["panels"]
+        self.assertEqual([p["key"] for p in panels], ["stim_ms_onset", "eye_ms", "task_ms_target", "extra_panel"])
+        self.assertTrue(panels[1]["url"].endswith("/figures/panels/_session/eye_ms.png"))
+        self.assertNotIn("panels", {u["id"]: u for u in session["units"]}[2]["figures"])
+        self.assertEqual([p["key"] for p in session["panels"]][-1], "extra_panel")
+        self.assertIsNotNone(Catalog([self.root]).resolve_figure(0, f"{SID}/figures/panels/_session/eye_ms.png"))
+
     def test_without_a_stability_table(self):
         (self.root / SID / "tables" / "units.csv").unlink()
         units = {u["id"]: u for u in Catalog([self.root]).session(SID)["units"]}
