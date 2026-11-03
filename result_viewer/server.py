@@ -13,6 +13,7 @@ cross-site POST) gets 403.
 """
 from __future__ import annotations
 
+import csv
 import gzip
 import hmac
 import json
@@ -193,6 +194,26 @@ class App:
         return {"sid": sid, "timeline": timeline, "log": log,
                 "plan": session_log.experiment_log(sid, settings["experiment_logs"])}
 
+    def probe(self, sid):
+        """The Probe view's session-level data: ``tables/mua_profile.csv`` (sort-free MUA per channel,
+        phys-analysis ``session_viewer.profile``), shared by every sorting of the session; units and
+        their ``prof_*`` classes come with the session itself."""
+        found = self.catalog.sessions().get(sid)
+        if found is None:
+            raise LookupError(f"no session {sid}")
+        path = found[1] / sid / "tables" / "mua_profile.csv"
+        rows = []
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    try:
+                        rows.append({k: float(row[k]) for k in ("y_um", "mua_hz", "big_hz", "noise_uv")})
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        except FileNotFoundError:
+            rows = None
+        return {"sid": sid, "mua": rows}
+
     def snapshot(self, sid, unit_id, sorting=None):
         """What the catalog says about a unit of one sorting right now; None when the session is not mounted."""
         session = self.catalog.session(sid, sorting)
@@ -306,7 +327,8 @@ def make_handler(app):
                 route = {"/api/health": self.health, "/api/config": self.config, "/api/sessions": self.sessions,
                          "/api/session": self.session, "/api/notebook": self.notebook,
                          "/api/electro_gui": self.electro_gui_status,
-                         "/api/timeline": lambda q, w: app.timeline(self._sid(q))}.get(path)
+                         "/api/timeline": lambda q, w: app.timeline(self._sid(q)[0]),
+                         "/api/probe": lambda q, w: app.probe(self._sid(q)[0])}.get(path)
                 if route is None:
                     raise HTTPError(404, "Not found.")
                 return self._json(route(query, where))
