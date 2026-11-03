@@ -186,8 +186,10 @@
     S.files = data.files || {};
     store.set('session', sid);
     $('session').value = sid;
+    S.session.views = [SESSION_VIEW].concat(S.session.views.filter(v => v.kind !== SESSION_VIEW.kind));
     if (view) S.view = view;
     if (!S.session.views.some(v => v.kind === S.view)) S.view = 'raster';
+    loadTimeline(sid);
     computeFiltered();
     let target = unitId != null && S.byId.has(unitId) ? unitId : store.get('last.' + sid, null);
     if (target == null || !S.byId.has(target)) target = S.filtered.length ? S.filtered[0] : (S.units.length ? S.units[0].id : null);
@@ -587,8 +589,8 @@
   function renderViews() {
     const u = S.byId.get(S.cur);
     $('views').innerHTML = S.session.views.map(v => {
-      const has = u && u.figures[v.kind];
-      return `<button class="view${has ? '' : ' missing'}" data-kind="${esc(v.kind)}" aria-current="${v.kind === S.view}" title="${esc(v.label)}${has ? '' : ' (none for this unit)'}">${esc(v.label)}</button>`;
+      const has = v.kind === SESSION_VIEW.kind || (u && u.figures[v.kind]);
+      return `<button class="view${has ? '' : ' missing'}${v.kind === SESSION_VIEW.kind ? ' session' : ''}" data-kind="${esc(v.kind)}" aria-current="${v.kind === S.view}" title="${esc(v.label)}${has ? '' : ' (none for this unit)'}">${esc(v.label)}</button>`;
     }).join('');
     const cur = $('views').querySelector('[aria-current="true"]');
     if (cur) cur.scrollIntoView({block: 'nearest', inline: 'nearest'});
@@ -622,6 +624,303 @@
     openSession(S.sessions[j].id, null, S.view);
   }
 
+  // --------------------------------------------------------------- session
+  /* The Session view and the per-unit strip: tables/session_timeline.json (trials, trains, stable intervals,
+   * rates, on the imec clock) and the rig dashboard's session_log.jsonl put on that clock by the server
+   * (/api/timeline). Times are seconds from the start of the recording. */
+  const SESSION_VIEW = {kind: 'session', label: 'Session', n: 0};
+  const TASK_COLORS = {fixation: '#495057', memory_saccade: '#1971c2', pursuit: '#2f9e44', reveal: '#f08c00',
+    overlap_saccade: '#9c36b5', freeview: '#868e96', pursuit_memory: '#c2255c'};
+  const PROTO_COLORS = ['#4c6ef5', '#12b886', '#fab005', '#e64980', '#7950f2', '#15aabf', '#fd7e14', '#82c91e', '#be4bdb', '#228be6'];
+  const LOG_KINDS = {
+    note: {label: 'Note', on: true, color: '#1c7ed6'}, mark: {label: 'Mark', on: true, color: '#2b8a3e'},
+    control: {label: 'Protocol', on: true, color: '#7950f2'}, manual_stim: {label: 'Manual stim', on: true, color: '#e03131'},
+    warn: {label: 'Warning', on: true, color: '#f08c00'}, probe: {label: 'Probe', on: true, color: '#495057'},
+    calibration: {label: 'Calibration', on: false, color: '#868e96'}, phys: {label: 'Depth', on: false, color: '#0c8599'},
+    set: {label: 'Setting', on: false, color: '#868e96'}, ask: {label: 'Asked', on: false, color: '#868e96'},
+    answer: {label: 'Answer', on: false, color: '#868e96'}, todo: {label: 'To-do', on: false, color: '#868e96'},
+    todo_done: {label: 'To-do done', on: false, color: '#868e96'}, todo_addressed: {label: 'To-do addressed', on: false, color: '#868e96'},
+  };
+  const EVENT_KINDS = ['note', 'mark', 'manual_stim', 'warn', 'calibration'];
+  S.tl = null;
+  S.tlKinds = Object.assign(Object.fromEntries(Object.entries(LOG_KINDS).map(([k, v]) => [k, v.on])), store.get('tlKinds', {}));
+  S.tlCursor = null;
+
+  async function loadTimeline(sid) {
+    S.tl = null;
+    S.tlCursor = null;
+    renderStrip();
+    if ($('sessionPane')) $('sessionPane').innerHTML = '';
+    try {
+      const data = await api('/api/timeline?sid=' + encodeURIComponent(sid));
+      if (S.sid !== sid) return;
+      S.tl = prepTimeline(data);
+    } catch (e) {
+      if (S.sid !== sid) return;
+      S.tl = {error: e.message};
+    }
+    renderStrip();
+    if (S.view === SESSION_VIEW.kind) renderSession();
+  }
+
+  function prepTimeline(data) {
+    const tl = data.timeline, log = data.log || {entries: [], runs: [], depths: [], alignment: {}};
+    const tr = tl ? tl.trials : {start: [], stop: []};
+    const starts = tr.start.filter(v => v != null), stops = tr.stop.filter(v => v != null);
+    const dur = tl ? tl.duration_s : null;
+    let x0 = Math.min(0, ...(starts.length ? [Math.min(...starts)] : []));
+    let x1 = Math.max(dur || 0, ...(stops.length ? [Math.max(...stops)] : []));
+    if (!tl) {  // no export timeline: span the aligned log during the task
+      const ts = log.entries.map(e => e.t).filter(t => t != null);
+      if (ts.length) { x0 = Math.min(...ts); x1 = Math.max(...ts); }
+    }
+    const protos = [];
+    for (const r of log.runs) if (!protos.includes(r.protocol)) protos.push(r.protocol);
+    return Object.assign({}, data, {tl, log, x0, x1: Math.max(x1, x0 + 1), dur, protos,
+      offset: log.alignment ? log.alignment.offset : null});
+  }
+
+  const protoColor = p => PROTO_COLORS[Math.max(0, S.tl.protos.indexOf(p)) % PROTO_COLORS.length];
+  function wallAt(t) {
+    if (S.tl.offset == null || t == null) return '';
+    const d = new Date((t - S.tl.offset) * 1000);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
+  }
+  const fmtClock = t => {
+    if (t == null) return '–';
+    const s = Math.round(Math.abs(t)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return `${t < 0 ? '−' : ''}${h ? h + ':' + String(m).padStart(2, '0') : m}:${String(s % 60).padStart(2, '0')}`;
+  };
+  function entryText(e) {
+    if (e.kind === 'control') return `${e.action || ''} ${e.protocol || ''}`.trim() + (e.text && !e.protocol ? ` — ${e.text}` : '');
+    if (e.kind === 'set') return `${e.name}: ${e.old} → ${e.new}`;
+    if (e.kind === 'phys' && !e.text) return `${e.probe} at ${e.depth} mm`;
+    return e.text || e.name || '';
+  }
+
+  /** One SVG of stacked lanes over the session; `lanes` are {h, label, draw(x, y0, h) -> svg string}. */
+  function timelineSvg(width, lanes, {labelW = 96, axis = true, cursor = null} = {}) {
+    const T = S.tl, padR = 8, W = Math.max(width, 200);
+    const plotW = W - labelW - padR;
+    const x = t => labelW + (Math.min(Math.max(t, T.x0), T.x1) - T.x0) / (T.x1 - T.x0) * plotW;
+    let y = 2, body = '';
+    // not recording: before 0 and after the end
+    const H = lanes.reduce((s, l) => s + l.h + 3, 0) + 2;
+    if (T.dur != null) {
+      if (T.x0 < 0) body += `<rect x="${labelW}" y="0" width="${x(0) - labelW}" height="${H}" class="tl-off"><title>not recording</title></rect>`;
+      if (T.x1 > T.dur) body += `<rect x="${x(T.dur)}" y="0" width="${labelW + plotW - x(T.dur)}" height="${H}" class="tl-off"><title>not recording</title></rect>`;
+    }
+    for (const lane of lanes) {
+      if (labelW) body += `<text x="${labelW - 6}" y="${y + lane.h / 2 + 4}" class="tl-lbl" text-anchor="end">${esc(lane.label)}</text>`;
+      body += lane.draw(x, y, lane.h, plotW);
+      y += lane.h + 3;
+    }
+    if (cursor != null) body += `<line x1="${x(cursor)}" x2="${x(cursor)}" y1="0" y2="${y}" class="tl-cursor"/>`;
+    let ax = '';
+    if (axis) {
+      const span = T.x1 - T.x0, step = [60, 300, 600, 900, 1800, 3600].find(s => span / s <= 10) || 7200;
+      for (let t = Math.ceil(T.x0 / step) * step; t <= T.x1; t += step) {
+        const label = S.tl.offset != null ? wallAt(t) : `${Math.round(t / 60)} min`;
+        ax += `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${y}" class="tl-grid"/><text x="${x(t)}" y="${y + 12}" class="tl-ax" text-anchor="middle">${label}</text>`;
+      }
+      y += 16;
+    }
+    return `<svg class="tl" width="${W}" height="${y}" viewBox="0 0 ${W} ${y}" data-x0="${T.x0}" data-x1="${T.x1}" data-lw="${labelW}" data-pw="${plotW}">${ax}${body}</svg>`;
+  }
+
+  // lanes
+  function laneProtocols(h, label = 'Protocol') {
+    return {h, label, draw: (x, y0) => S.tl.log.runs.filter(r => r.t0 != null).map(r => {
+      const t1 = r.t1 != null ? r.t1 : r.t0 + 30, w = Math.max(1, x(t1) - x(r.t0));
+      const tip = `${r.protocol} · run ${r.run} · ${wallAt(r.t0)}–${wallAt(t1)} (${fmtClock(t1 - r.t0)})`;
+      const txt = w > 46 && h >= 14 ? `<text x="${x(r.t0) + 3}" y="${y0 + h / 2 + 4}" class="tl-in">${esc(r.protocol.replace(/^(MultiTask|Connectivity)/, m => m === 'MultiTask' ? 'MT' : 'Conn'))}</text>` : '';
+      return `<g><rect x="${x(r.t0)}" y="${y0}" width="${w}" height="${h}" fill="${protoColor(r.protocol)}" opacity=".8"><title>${esc(tip)}</title></rect>${txt}</g>`;
+    }).join('')};
+  }
+  function laneTasks(h) {
+    const tr = S.tl.tl.trials;
+    return {h, label: 'Task', draw: (x, y0) => tr.id.map((id, i) => {
+      if (tr.start[i] == null) return '';
+      const w = Math.max(0.6, x(tr.stop[i]) - x(tr.start[i]));
+      return `<rect x="${x(tr.start[i])}" y="${y0}" width="${w}" height="${h}" fill="${TASK_COLORS[tr.task[i]] || '#adb5bd'}"><title>trial ${id} · ${esc(tr.task[i])}${tr.block[i] != null ? ' · block ' + tr.block[i] : ''}</title></rect>`;
+    }).join('')};
+  }
+  function laneStim(h) {
+    const tr = S.tl.tl.trials;
+    return {h, label: 'Stim · sham · conn', draw: (x, y0) => {
+      let s = tr.id.map((id, i) => {
+        if (tr.start[i] == null || !(tr.stim[i] || tr.conn[i])) return '';
+        const c = tr.conn[i] ? '' : tr.stim[i] === 1 ? 'tl-stim' : 'tl-sham';
+        return c ? `<rect x="${x(tr.start[i])}" y="${y0 + (tr.stim[i] === 1 ? 0 : h / 2)}" width="1" height="${h / 2}" class="${c}"><title>trial ${id} · ${tr.stim[i] === 1 ? 'stim' : 'sham'}</title></rect>` : '';
+      }).join('');
+      s += S.tl.tl.trains.map(([a, b, amp]) => `<rect x="${x(a)}" y="${y0}" width="${Math.max(1, x(b) - x(a))}" height="${h}" class="tl-conn"><title>connectivity train ${amp != null ? amp + ' µA' : ''}</title></rect>`).join('');
+      return s;
+    }};
+  }
+  function laneSuccess(h) {
+    const tr = S.tl.tl.trials, pts = [], win = [];
+    tr.id.forEach((id, i) => {
+      // rewarded, not `success`: MWorks sets success on every completed trial in these sessions
+      if (tr.stop[i] == null || tr.rew[i] == null || tr.conn[i]) return;
+      win.push(tr.rew[i]); if (win.length > 25) win.shift();
+      pts.push([tr.stop[i], win.reduce((a, b) => a + b, 0) / win.length]);
+    });
+    return {h, label: 'Rewarded (25 trials)', draw: (x, y0) => pts.length
+      ? `<line x1="${x(S.tl.x0)}" x2="${x(S.tl.x1)}" y1="${y0 + h / 2}" y2="${y0 + h / 2}" class="tl-grid"/>` +
+        `<polyline points="${pts.map(([t, v]) => `${x(t).toFixed(1)},${(y0 + h - v * h).toFixed(1)}`).join(' ')}" class="tl-line"/>` : ''};
+  }
+  function laneDepths(h) {
+    const by = {};
+    for (const d of S.tl.log.depths) if (d.t != null && d.t >= S.tl.x0 - 60 && d.t <= S.tl.x1 + 60) (by[d.probe] = by[d.probe] || []).push(d);
+    return Object.entries(by).map(([probe, ds]) => {
+      ds.sort((a, b) => a.t - b.t);
+      const lo = Math.min(...ds.map(d => d.depth)), hi = Math.max(...ds.map(d => d.depth));
+      const yv = (v, y0) => y0 + 2 + (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (h - 4);  // deeper is lower
+      return {h, label: `${probe} ${fmtNum(lo)}–${fmtNum(hi)} mm`, draw: (x, y0) => {
+        let pts = '';
+        ds.forEach((d, i) => { pts += `${i ? `${x(d.t).toFixed(1)},${yv(ds[i - 1].depth, y0).toFixed(1)} ` : ''}${x(d.t).toFixed(1)},${yv(d.depth, y0).toFixed(1)} `; });
+        pts += `${x(S.tl.x1).toFixed(1)},${yv(ds[ds.length - 1].depth, y0).toFixed(1)}`;
+        return `<polyline points="${pts}" class="tl-depth"><title>${esc(probe)} depth (dashboard), ${fmtNum(lo)}–${fmtNum(hi)} mm</title></polyline>`;
+      }};
+    });
+  }
+  function laneNStable(h) {
+    const n = S.tl.tl.n_stable, bin = S.tl.tl.bin_s, mx = Math.max(1, ...n);
+    return {h, label: `Units stable (≤${mx})`, draw: (x, y0) => {
+      const pts = n.map((v, i) => `${x(i * bin).toFixed(1)},${(y0 + h - v / mx * h).toFixed(1)} ${x((i + 1) * bin).toFixed(1)},${(y0 + h - v / mx * h).toFixed(1)}`).join(' ');
+      return `<polygon points="${x(0)},${y0 + h} ${pts} ${x(n.length * bin)},${y0 + h}" class="tl-area"><title>SUA/MUA units inside their stable interval, per ${bin} s</title></polygon>`;
+    }};
+  }
+  function laneUnit(h, label) {
+    const u = S.tl.tl && S.tl.tl.units[String(S.cur)];
+    return {h, label: label || `Unit ${S.cur}`, draw: (x, y0) => {
+      if (!u) return `<text x="${x(S.tl.x0) + 4}" y="${y0 + h / 2 + 4}" class="tl-ax">no timeline for this unit</text>`;
+      const bin = S.tl.tl.bin_s, mx = Math.max(0.5, ...u.rate);
+      let s = u.stable.map(([a, b]) => `<rect x="${x(a)}" y="${y0}" width="${Math.max(1, x(b) - x(a))}" height="${h}" class="tl-stable"><title>stable ${wallAt(a)}–${wallAt(b)} (${fmtClock(b - a)})</title></rect>`).join('');
+      const pts = u.rate.map((v, i) => `${x((i + 0.5) * bin).toFixed(1)},${(y0 + h - 1 - v / mx * (h - 2)).toFixed(1)}`).join(' ');
+      s += `<polyline points="${pts}" class="tl-rate"><title>rate per ${bin} s, peak ${fmtNum(mx)} Hz</title></polyline>`;
+      if (!u.stable.length) s += `<text x="${x(S.tl.x1) - 4}" y="${y0 + 11}" class="tl-ax" text-anchor="end">never stable</text>`;
+      return s;
+    }};
+  }
+  function laneEvents(h) {
+    const ev = S.tl.log.entries.filter(e => e.t != null && EVENT_KINDS.includes(e.kind) && S.tlKinds[e.kind] && e.t >= S.tl.x0 && e.t <= S.tl.x1);
+    return {h, label: 'Notes · marks', draw: (x, y0) => ev.map(e => {
+      const k = LOG_KINDS[e.kind];
+      return `<circle cx="${x(e.t).toFixed(1)}" cy="${(y0 + h / 2).toFixed(1)}" r="4" fill="${k.color}" class="tl-ev" data-t="${e.t}"><title>${esc(e.wall || '')} ${esc(k.label)}: ${esc(entryText(e))}</title></circle>`;
+    }).join('')};
+  }
+
+  /** The per-unit strip above the figure: protocol runs, and this unit's stable intervals and rate. */
+  function renderStrip() {
+    const el = $('unitStrip');
+    if (!S.tl || S.tl.error || !S.tl.tl || S.view === SESSION_VIEW.kind || S.cur == null) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    const w = el.clientWidth || $('stage').clientWidth - 24;
+    el.innerHTML = timelineSvg(w, [laneProtocols(7, 'Protocol'), laneUnit(22, 'Stable · rate')], {labelW: 78, axis: true});
+  }
+
+  function renderSession() {
+    const pane = $('sessionPane');
+    if (!S.tl) { pane.innerHTML = '<p class="muted">Loading the session timeline…</p>'; return; }
+    if (S.tl.error) { pane.innerHTML = `<p class="warn">Could not load the session timeline: ${esc(S.tl.error)}</p>`; return; }
+    const T = S.tl, tl = T.tl, log = T.log, al = log.alignment || {};
+    let html = '<div class="sp-head">';
+    if (tl) {
+      const tasks = {};
+      tl.trials.task.forEach((t, i) => { if (tl.trials.start[i] != null && tl.trials.start[i] >= 0 && tl.trials.stop[i] <= T.dur) tasks[t] = (tasks[t] || 0) + 1; });
+      const q = {};
+      for (const u of S.units) q[u.quality] = (q[u.quality] || 0) + 1;
+      html += `<span class="badge">recording ${fmtClock(T.dur)}${T.offset != null ? ` · ${wallAt(0)}–${wallAt(T.dur)}` : ''}</span>` +
+        `<span class="badge">${Object.values(tasks).reduce((a, b) => a + b, 0)} trials in recording</span>` +
+        Object.entries(tasks).map(([t, n]) => `<span class="badge"><span class="tdot" style="--c:${TASK_COLORS[t] || '#adb5bd'}"></span>${esc(t.replace(/_/g, ' '))} ${n}</span>`).join('') +
+        (tl.trains.length ? `<span class="badge"><span class="tdot" style="--c:#7048e8"></span>${tl.trains.length} connectivity trains</span>` : '') +
+        `<span class="badge">${Q_ORDER.filter(k => q[k]).map(k => `${q[k]} ${k}`).join(' · ')}</span>`;
+    } else {
+      html += '<span class="badge warn">No tables/session_timeline.json in this export yet (phys-analysis: python -m session_viewer refresh).</span>';
+    }
+    html += log.sources.length
+      ? `<span class="badge" title="${esc(log.sources.join('\n'))}">dashboard log aligned by ${esc(al.method)}${al.votes ? ` (${al.votes}/${al.n} entries)` : ''}</span>`
+      : '<span class="badge warn">no dashboard session_log.jsonl found for this date</span>';
+    html += '</div><div id="tlBox"></div>';
+    if (log.runs.length) {
+      html += '<details class="sp-sec" open><summary>Protocol runs</summary><table class="sp-runs"><thead><tr><th>Run</th><th>Protocol</th><th>Start</th><th>Length</th><th>Trials</th></tr></thead><tbody>';
+      for (const r of log.runs) {
+        let counts = {};
+        if (tl && r.t0 != null) tl.trials.task.forEach((t, i) => { const s = tl.trials.start[i]; if (s != null && s >= r.t0 && s < (r.t1 != null ? r.t1 : Infinity)) counts[t] = (counts[t] || 0) + 1; });
+        const n = Object.values(counts).reduce((a, b) => a + b, 0);
+        html += `<tr data-t="${r.t0}"><td>${esc(r.run)}</td><td><span class="tdot" style="--c:${protoColor(r.protocol)}"></span>${esc(r.protocol)}</td>` +
+          `<td>${esc(r.wall0 || '')} <small class="muted">${fmtClock(r.t0)}</small></td><td>${r.t1 != null ? fmtClock(r.t1 - r.t0) : '…'}</td>` +
+          `<td>${n}${n ? ` <small class="muted">${Object.entries(counts).map(([t, c]) => `${esc(t.replace(/_/g, ' '))} ${c}`).join(', ')}</small>` : ''}</td></tr>`;
+      }
+      html += '</tbody></table></details>';
+    }
+    html += '<details class="sp-sec" open><summary>Log</summary><div class="sp-kinds">' +
+      Object.entries(LOG_KINDS).filter(([k]) => log.entries.some(e => e.kind === k)).map(([k, v]) =>
+        `<button class="chip" data-kind="${k}" aria-pressed="${!!S.tlKinds[k]}"><span class="tdot" style="--c:${v.color}"></span>${esc(v.label)} ${log.entries.filter(e => e.kind === k).length}</button>`).join('') +
+      '<input id="tlSearch" type="search" placeholder="search the log" aria-label="Search the log"></div><ol id="tlLog" class="sp-log"></ol></details>';
+    if (T.plan) html += `<details class="sp-sec"><summary>Experiment log · ${esc(T.plan.path.split('/').pop())}</summary><pre class="sp-plan">${esc(T.plan.text)}</pre></details>`;
+    pane.innerHTML = html;
+    renderSessionSvg();
+    renderLog();
+  }
+
+  function renderSessionSvg() {
+    const box = $('tlBox');
+    if (!box || !S.tl) return;
+    const lanes = [laneProtocols(18)];
+    if (S.tl.tl) lanes.push(laneTasks(12), laneStim(12), laneSuccess(26));
+    lanes.push(...laneDepths(26));
+    if (S.tl.tl) lanes.push(laneNStable(26), laneUnit(26));
+    lanes.push(laneEvents(14));
+    box.innerHTML = timelineSvg(box.clientWidth || 800, lanes, {labelW: 118, cursor: S.tlCursor}) +
+      '<div class="sp-legend muted small">' + Object.entries(TASK_COLORS).filter(([t]) => S.tl.tl && S.tl.tl.trials.task.includes(t))
+        .map(([t, c]) => `<span><span class="tdot" style="--c:${c}"></span>${esc(t.replace(/_/g, ' '))}</span>`).join('') +
+      '<span><i class="sw tl-stim"></i>stim</span><span><i class="sw tl-sham"></i>sham</span><span><i class="sw tl-conn"></i>connectivity</span>' +
+      '<span><i class="sw tl-stable"></i>unit stable</span><span>shaded: not recording · click to find the log entry</span></div>';
+  }
+
+  function renderLog() {
+    const ol = $('tlLog');
+    if (!ol) return;
+    const q = ($('tlSearch') && $('tlSearch').value || '').trim().toLowerCase();
+    const rows = S.tl.log.entries.filter(e => S.tlKinds[e.kind] && (!q || entryText(e).toLowerCase().includes(q)));
+    ol.innerHTML = rows.map(e => {
+      const k = LOG_KINDS[e.kind] || {label: e.kind, color: '#868e96'};
+      const inRec = e.t != null && S.tl.dur != null && e.t >= 0 && e.t <= S.tl.dur;
+      return `<li class="k-${esc(e.kind)}${inRec ? '' : ' outside'}" data-t="${e.t == null ? '' : e.t}"><span class="lt">${esc(e.wall || '')}</span>` +
+        `<span class="ls">${e.t == null ? '' : fmtClock(e.t)}</span><span class="lk" style="--c:${k.color}">${esc(k.label)}</span>` +
+        `<span class="lx">${esc(entryText(e))}${e.after_trial != null ? ` <small class="muted">after trial ${e.after_trial}</small>` : ''}</span></li>`;
+    }).join('') || '<li class="muted">Nothing of these kinds.</li>';
+  }
+
+  $('sessionPane').addEventListener('click', e => {
+    const chip = e.target.closest('.sp-kinds .chip');
+    if (chip) {
+      S.tlKinds[chip.dataset.kind] = !S.tlKinds[chip.dataset.kind];
+      store.set('tlKinds', S.tlKinds);
+      chip.setAttribute('aria-pressed', String(S.tlKinds[chip.dataset.kind]));
+      renderLog(); renderSessionSvg();
+      return;
+    }
+    const row = e.target.closest('[data-t]');
+    const svg = e.target.closest('svg.tl');
+    if (svg) {  // a click on the timeline: the time under it, and the first log entry from then
+      const r = svg.getBoundingClientRect(), lw = Number(svg.dataset.lw), pw = Number(svg.dataset.pw);
+      const f = (e.clientX - r.left - lw) / pw;
+      if (f < 0 || f > 1) return;
+      const t = e.target.dataset && e.target.dataset.t ? Number(e.target.dataset.t) : Number(svg.dataset.x0) + f * (Number(svg.dataset.x1) - Number(svg.dataset.x0));
+      S.tlCursor = t; renderSessionSvg();
+      const li = Array.from(document.querySelectorAll('#tlLog li[data-t]')).find(el => el.dataset.t !== '' && Number(el.dataset.t) >= t - 1);
+      if (li) { document.querySelectorAll('#tlLog li.hit').forEach(el => el.classList.remove('hit')); li.classList.add('hit'); li.scrollIntoView({block: 'center', behavior: 'smooth'}); }
+      return;
+    }
+    if (row && row.dataset.t !== '') { S.tlCursor = Number(row.dataset.t); renderSessionSvg(); }
+  });
+  $('sessionPane').addEventListener('input', e => { if (e.target.id === 'tlSearch') renderLog(); });
+  let resizeTimer = null;
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { renderStrip(); if (S.view === SESSION_VIEW.kind) renderSessionSvg(); }, 150); });
+
   // ---------------------------------------------------------------- figure
   const imgCache = new Map();
   function getImg(url) {
@@ -642,6 +941,15 @@
     const u = S.byId.get(S.cur), fig = u && u.figures[S.view];
     const img = $('img'), msg = $('figMsg'), box = $('figure');
     const mine = ++figSeq;
+    const onSession = S.view === SESSION_VIEW.kind;
+    box.hidden = onSession;
+    $('sessionPane').hidden = !onSession;
+    renderStrip();
+    if (onSession) {
+      spinner(false);
+      if ($('tlBox')) renderSessionSvg(); else renderSession();  // a new unit: only its lane changes
+      return;
+    }
     if (!fig) {
       img.hidden = true; img.removeAttribute('src');
       msg.hidden = false; msg.textContent = `No “${viewLabel(S.view)}” figure for unit ${u ? u.id : ''}. ] / [ for another figure, r for the raster.`;
@@ -673,7 +981,7 @@
 
   function preload() {
     const ids = S.filtered, i = ids.indexOf(S.cur);
-    if (i < 0) return;
+    if (i < 0 || S.view === SESSION_VIEW.kind) return;
     for (const d of [1, 2, 3, -1]) {
       const id = ids[i + d];
       const f = id != null && S.byId.get(id).figures[S.view];

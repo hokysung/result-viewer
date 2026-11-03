@@ -68,6 +68,16 @@ filter by quality, full-session stability, area, flag, noted and tag, and the ar
 the matches only. **Sort** orders them by unit #, firing rate or stable trials, and by pulse-locked
 or train p in a session with connectivity mapping.
 
+**Session** (the first tab) shows what happened when: protocol runs, every trial by task, stim / sham
+trials and connectivity trains, rolling reward rate, probe depths, how many units are stable, the
+current unit's stable intervals and rate, and the notes and marks, on one time axis (wall clock), then
+the protocol runs as a table, the dashboard log (filter by kind, search; click the timeline to find
+the entry) and the session's experiment log. Every other tab has a strip above the figure with the
+protocol runs and the unit's stable intervals and rate. Trials, trains and stability come from
+`tables/session_timeline.json` (phys-analysis `session_viewer refresh` / `build`); the log is the rig
+dashboard's `session_log.jsonl`, from `tables/` or the folders in settings.json `dashboard_dirs`, put on
+the recording clock by `result_viewer/session_log.py` (about a second; it says which way it aligned).
+
 **QC** (below the chips) keeps only units that pass *every* criterion: a threshold (≥ or ≤) on any
 numeric column of `tables/units.csv` — rate, stable trials or fraction, SNR, ISI violations,
 presence ratio, amplitude, and the `conn_*` connectivity statistics. Each row shows how many units

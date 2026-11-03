@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__, electro_gui
+from . import __version__, electro_gui, session_log
 from .notebook import host_tag
 from .settings import load_settings
 
@@ -176,6 +176,23 @@ class App:
         self._probe.pop(launcher.url, None)
         return result
 
+    def timeline(self, sid):
+        """The Session view: ``tables/session_timeline.json`` plus the rig dashboard's log on its clock."""
+        found = self.catalog.sessions().get(sid)
+        if found is None:
+            raise LookupError(f"no session {sid}")
+        session_dir = found[1] / sid
+        settings = self.settings()
+        try:
+            with (session_dir / "tables" / "session_timeline.json").open("r", encoding="utf-8") as handle:
+                timeline = json.load(handle)
+        except FileNotFoundError:
+            timeline = None
+        stops = timeline["trials"]["stop"] if timeline else []
+        log = session_log.session_log(session_dir, sid, stops, settings["dashboard_dirs"])
+        return {"sid": sid, "timeline": timeline, "log": log,
+                "plan": session_log.experiment_log(sid, settings["experiment_logs"])}
+
     def snapshot(self, sid, unit_id):
         """What the catalog says about a unit right now; None when the session is not mounted."""
         session = self.catalog.session(sid)
@@ -288,7 +305,8 @@ def make_handler(app):
                     return self.figure(path[len("/fig/"):])
                 route = {"/api/health": self.health, "/api/config": self.config, "/api/sessions": self.sessions,
                          "/api/session": self.session, "/api/notebook": self.notebook,
-                         "/api/electro_gui": self.electro_gui_status}.get(path)
+                         "/api/electro_gui": self.electro_gui_status,
+                         "/api/timeline": lambda q, w: app.timeline(self._sid(q))}.get(path)
                 if route is None:
                     raise HTTPError(404, "Not found.")
                 return self._json(route(query, where))

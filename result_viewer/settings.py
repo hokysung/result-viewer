@@ -27,6 +27,13 @@ MAX_TAGS = 9
 DEFAULTS = {
     "tags": ["interesting", "stim", "task", "pursuit", "saccade", "reward", "drift", "noise"],
     "electro_gui": {"url": "http://127.0.0.1:8765", "remote_url": ""},
+    # Session view: where the rig dashboard's session folders are (session_log.jsonl), first hit wins,
+    # and phys-context's experiment_logs (the archived session plan, <YYYYMMDD>-<Subject>.md or <YYYYMMDD>.md)
+    "dashboard_dirs": [
+        "~/Library/CloudStorage/GoogleDrive-hokyung@mit.edu/Other computers/My Mac Pro/Dashboard",
+        "~/Documents/MWorks/Dashboard",
+    ],
+    "experiment_logs": "~/Code/phys-context/experiment_logs",
 }
 
 
@@ -66,4 +73,9 @@ def load_settings(data_dir):
             for key in ("url", "remote_url"):
                 if isinstance(eg.get(key), str):
                     out["electro_gui"][key] = eg[key].strip()
+        dirs = raw.get("dashboard_dirs")
+        if isinstance(dirs, list):
+            out["dashboard_dirs"] = [d for d in dirs if isinstance(d, str) and d.strip()]
+        if isinstance(raw.get("experiment_logs"), str):
+            out["experiment_logs"] = raw["experiment_logs"].strip()
     return out
