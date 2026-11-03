@@ -17,9 +17,10 @@ python3 -m unittest discover -s tests -t .
 | | Path | |
 |---|---|---|
 | Sessions (read-only) | `--root DIR` (repeatable; first root holding a session wins), default `$SESSION_VIEWER_ROOTS` or `~/viewer_sessions` | one folder per session, as phys-analysis `python -m session_viewer build` writes it |
-| Notebooks | `<data>/notes/<sid>.json` | source of truth, one file per session |
-| | `<data>/notes/<sid>.md` | readable copy, regenerated on every save |
-| electro_gui configs | `<data>/electro_gui/<sid>/electro_gui_configs/unit_NNNN.json` | one per noted unit, mirrored on every save |
+| Notebooks | `<data>/notes/<sid>.json` | source of truth, one file per session (its default sorting) |
+| | `<data>/notes/<sid>@<sorting>.json` | the same for another sorting of the session |
+| | `<data>/notes/<sid>.md`, `<sid>@<sorting>.md` | readable copy, regenerated on every save |
+| electro_gui configs | `<data>/electro_gui/<sid>[@<sorting>]/electro_gui_configs/unit_NNNN.json` | one per noted unit, mirrored on every save |
 | Settings | `<data>/settings.json` | tag list and electro_gui URLs |
 
 `<data>` is `--data-dir`, else `$RESULT_VIEWER_DATA`, else `~/result-viewer-data`. Put it in a synced
@@ -36,7 +37,19 @@ A session folder is
   tables/units.csv                             unit_id, quality, area, peak_channel, depth_um,
                                                mean_rate_hz, n_stable_trials, n_completed_trials,
                                                QC metrics and conn_* statistics (all used by QC)
+  sortings/<name>/                             other sortings of the session (optional), e.g. ms5_lar_v6:
+    session.h5, figures/..., tables/units.csv  each a full export of its own, listed when session.h5 exists
 ```
+
+**Sortings.** The session folder itself is the default sorting. When `sortings/` holds others, a
+second menu next to the session picks one; it reloads the units, figures, QC and notebook, and is
+kept in the link (`#s=<sid>&sorting=<name>`; no `sorting` = the default). Each sorting is named by
+`session.h5`'s `meta["streams"]` (`ms5_lar_v8`, or `imec0 ms5_lar_v8 · imec1 ms5_lar_v6` when the
+streams differ; read without h5py). Unit ids of two sortings are unrelated, so each sorting has
+its own notebook (`<sid>@<sorting>.json`; the default keeps `<sid>.json`), and electro_gui links to
+another sorting carry `?sorting=<name>`. The API takes `sorting=` on `/api/session`, `/api/notebook`
+and `POST /api/note`; `/api/sessions` lists every session's `sortings` (name, label, is_default,
+n_units, noted, flagged).
 
 A unit is a unit id of `session.h5`, defined by its raster. Its current label, rate, stable trials,
 peak channel and depth come from `tables/units.csv` (channel and depth only when the table is not
@@ -117,6 +130,7 @@ The server listens on loopback only. To use it from a phone, publish it to your 
 ```
 result_viewer/
   catalog.py      sessions, units and figures under the roots
+  h5meta.py       session.h5's meta attribute (sorting names), standard library only
   notebook.py     <sid>.json read-modify-write, <sid>.md rendering
   electro_gui.py  deep links, config-file mirror, liveness probe, starting electro_gui
   settings.py     data folder, settings.json
@@ -124,5 +138,5 @@ result_viewer/
   launchagent.py  com.hokyung.result-viewer
   cli.py          serve | rebuild | launchagent
   static/         index.html, app.css, app.js, eg-start.html/.js, icons, manifest (no build step)
-tests/            unittest, fake session tree in tests/helpers.py
+tests/            unittest, fake session tree in tests/helpers.py, small h5py-made files in tests/data/
 ```

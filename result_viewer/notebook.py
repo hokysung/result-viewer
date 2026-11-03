@@ -1,8 +1,12 @@
 """Per-session unit notebooks kept in the data dir (a synced folder if shared between machines).
 
-``<data>/notes/<sid>.json`` is the source of truth::
+``<data>/notes/<sid>.json`` is the source of truth for the session's default
+sorting, ``<data>/notes/<sid>@<sorting>.json`` for another sorting of it (a
+``sortings/<sorting>/`` export; see ``catalog``).  Unit ids of two sortings are
+unrelated, so each sorting has its own notebook; the default keeps the plain
+``<sid>`` name it always had.  ``notebook_key`` makes the name::
 
-    {"schema": "result-viewer.notebook/1", "session_id": "sub-Ravel_ses-2026_09_15",
+    {"schema": "result-viewer.notebook/1", "session_id": "Ravel_20260915", ["sorting": "ms5_lar_v6",]
      "updated_at_utc": "...", "units": {"4": {"unit_id": 4, "note": "...", "tags": ["interesting"],
      "flag": true, "quality": "noise", "area": "acc", "peak_channel": 22, "depth_um": 220,
      "figure": "unit_0004_noise_Ravel_20260915_acc_rates_raster.png",
@@ -28,11 +32,14 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .catalog import valid_sorting
+
 SCHEMA = "result-viewer.notebook/1"
 MAX_NOTE = 20000
 MAX_TAG = 40
 SNAPSHOT_KEYS = ("quality", "area", "peak_channel", "depth_um", "figure")
 _SID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+SORTING_SEP = "@"  # never in a session id or a sorting name
 
 
 def host_tag():
@@ -52,8 +59,28 @@ def valid_sid(sid):
     return isinstance(sid, str) and bool(_SID_RE.match(sid)) and len(sid) <= 200
 
 
-def empty_notebook(sid):
-    return {"schema": SCHEMA, "session_id": sid, "updated_at_utc": None, "units": {}}
+def notebook_key(sid, sorting=None):
+    """``<sid>`` for the default sorting, ``<sid>@<sorting>`` for another: the notebook's file stem."""
+    if not valid_sid(sid):
+        raise ValueError(f"not a session id: {sid!r}")
+    if not valid_sorting(sorting):
+        raise ValueError(f"not a sorting name: {sorting!r}")
+    return sid if sorting is None else f"{sid}{SORTING_SEP}{sorting}"
+
+
+def split_key(key):
+    """``notebook_key``'s inverse: ``(sid, sorting or None)``; ValueError for anything else."""
+    sid, sep, sorting = key.partition(SORTING_SEP)
+    sorting = sorting if sep else None
+    notebook_key(sid, sorting)
+    return sid, sorting
+
+
+def empty_notebook(sid, sorting=None):
+    out = {"schema": SCHEMA, "session_id": sid, "updated_at_utc": None, "units": {}}
+    if sorting is not None:
+        out["sorting"] = sorting
+    return out
 
 
 def write_atomic(path, text):
@@ -97,31 +124,29 @@ class Notebooks:
         self.render_markdown = render_markdown
         self._lock = threading.Lock()
 
-    def path(self, sid):
-        if not valid_sid(sid):
-            raise ValueError(f"not a session id: {sid!r}")
-        return self.notes_dir / f"{sid}.json"
+    def path(self, sid, sorting=None):
+        return self.notes_dir / f"{notebook_key(sid, sorting)}.json"
 
-    def mtime(self, sid):
+    def mtime(self, sid, sorting=None):
         try:
-            return self.path(sid).stat().st_mtime_ns
+            return self.path(sid, sorting).stat().st_mtime_ns
         except OSError:
             return None
 
-    def load(self, sid):
-        path = self.path(sid)
+    def load(self, sid, sorting=None):
+        path = self.path(sid, sorting)
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
-            return empty_notebook(sid)
+            return empty_notebook(sid, sorting)
         if not isinstance(data, dict) or not isinstance(data.get("units"), dict):
             raise ValueError(f"{path} is not a result-viewer notebook")
         return data
 
-    def conflicts(self, sid):
-        """Dropbox conflicted copies of this session's notebook (``<sid> (… conflicted copy …).json``)."""
-        prefix = f"{sid} ("
+    def conflicts(self, sid, sorting=None):
+        """Dropbox conflicted copies of this notebook (``<key> (… conflicted copy …).json``)."""
+        prefix = f"{notebook_key(sid, sorting)} ("
         try:
             names = os.listdir(self.notes_dir)
         except OSError:
@@ -129,30 +154,30 @@ class Notebooks:
         return sorted(n for n in names if n.startswith(prefix) and "conflicted copy" in n and n.endswith(".json"))
 
     def summary(self):
-        """``{sid: {"noted": n, "flagged": n}}`` for every notebook on disk."""
+        """``{notebook_key: {"noted": n, "flagged": n}}`` for every notebook on disk (``<sid>`` for a default sorting)."""
         out = {}
         try:
             names = sorted(os.listdir(self.notes_dir))
         except OSError:
             return out
         for name in names:
-            sid = name[:-5] if name.endswith(".json") else None
-            if not sid or not valid_sid(sid):
-                continue
+            key = name[:-5] if name.endswith(".json") else None
             try:
-                units = self.load(sid)["units"]
+                units = self.load(*split_key(key or ""))["units"]
             except (OSError, ValueError):
                 continue
-            out[sid] = {"noted": len(units), "flagged": sum(1 for e in units.values() if e.get("flag"))}
+            out[key] = {"noted": len(units), "flagged": sum(1 for e in units.values() if e.get("flag"))}
         return out
 
-    def update(self, sid, unit_id, changes, snapshot=None, tag_order=()):
+    def update(self, sid, unit_id, changes, snapshot=None, tag_order=(), sorting=None):
         """Apply ``changes`` (any of note / tags / flag) to one unit; returns ``(notebook, entry or None)``.
 
         ``snapshot`` (quality, area, peak_channel, depth_um, figure) comes from the
         catalog, never from the client; it is kept from the last save when the
         results are not mounted.  An entry with no note, tags or flag is removed.
+        ``sorting`` picks the notebook (None: the session's default sorting).
         """
+        path = self.path(sid, sorting)
         unit_id = int(unit_id)
         patch = {}
         if "note" in changes:
@@ -173,7 +198,7 @@ class Notebooks:
 
         with self._lock:
             self.notes_dir.mkdir(parents=True, exist_ok=True)
-            notebook = self.load(sid)
+            notebook = self.load(sid, sorting)
             key = str(unit_id)
             now = utc_now()
             previous = notebook["units"].get(key) or {}
@@ -195,11 +220,13 @@ class Notebooks:
                 notebook["units"][key] = entry
             notebook["schema"] = SCHEMA
             notebook["session_id"] = sid
+            if sorting is not None:
+                notebook["sorting"] = sorting
             notebook["updated_at_utc"] = now
             notebook["units"] = {k: notebook["units"][k] for k in sorted(notebook["units"], key=_unit_order)}
-            write_atomic(self.path(sid), json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
+            write_atomic(path, json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
             if self.render_markdown:
-                write_atomic(self.path(sid).with_suffix(".md"), render_markdown(notebook, tag_order))
+                write_atomic(path.with_suffix(".md"), render_markdown(notebook, tag_order))
             return notebook, entry
 
 
@@ -234,9 +261,11 @@ def unit_heading(entry):
 def render_markdown(notebook, tag_order=()):
     """The readable notebook: an index by flag and tag, then one section per unit."""
     sid = notebook.get("session_id", "")
+    sorting = notebook.get("sorting")
+    stem = f"{sid}{SORTING_SEP}{sorting}" if sorting else sid
     units = [notebook["units"][k] for k in sorted(notebook["units"], key=_unit_order)]
-    lines = [f"# Unit notebook · {sid}", "",
-             f"<!-- Generated by result-viewer from {sid}.json on every save. "
+    lines = [f"# Unit notebook · {sid}" + (f" · sorting {sorting}" if sorting else ""), "",
+             f"<!-- Generated by result-viewer from {stem}.json on every save. "
              "Take notes in the viewer: edits to this file are overwritten. -->", ""]
     flagged = [e for e in units if e.get("flag")]
     lines.append(f"{len(units)} units noted · {len(flagged)} flagged · updated {_local(notebook.get('updated_at_utc'))}")
