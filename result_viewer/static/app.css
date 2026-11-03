@@ -47,10 +47,11 @@ kbd {
 .brand { font-weight: 600; letter-spacing: .01em; margin-right: 4px; }
 .spacer { flex: 1; }
 .rowbreak { display: none; }
-#session {
+#session, #sorting {
   max-width: 340px; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px;
   background: var(--panel);
 }
+#sorting { max-width: 260px; }
 .nav { display: flex; align-items: center; gap: 2px; }
 #pos { min-width: 92px; text-align: center; font-variant-numeric: tabular-nums; color: var(--muted); }
 .icon {
@@ -260,6 +261,7 @@ body.focus #units, body.focus #notes { display: none; }
   #drawerBtn { order: 0; }
   #session { order: 1; flex: 1 1 0; min-width: 0; max-width: none; font-size: 16px; }
   #helpBtn { order: 2; }
+  #sorting { order: 3; flex: 1 1 100%; max-width: none; font-size: 16px; }  /* a row of its own, when shown */
   .rowbreak { display: block; order: 3; flex-basis: 100%; height: 0; }
   .nav { order: 4; }
   .spacer { order: 5; }
@@ -374,3 +376,32 @@ svg.tl { display: block; max-width: 100%; cursor: crosshair; }
 .pcard img { width: 100%; height: auto; display: block; }
 .pcard.big { cursor: default; max-width: 1100px; margin: 0 auto; }
 .pcard.big img { max-height: calc(100vh - 260px); object-fit: contain; }
+/* ---- Probe view (units along the probe, phys-analysis session_viewer.profile) ---- */
+#probePane { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 12px; }
+.pp-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 8px; }
+.pp-head .chip[disabled] { opacity: .45; cursor: default; }
+.pp-wrap { display: flex; gap: 14px; align-items: flex-start; }
+#ppBox { flex: 1 1 auto; min-width: 300px; background: var(--figure-bg); border: 1px solid var(--line); border-radius: 8px; }
+#ppCard { flex: 0 0 300px; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; position: sticky; top: 0; }
+#ppCard h3 { font-size: 14px; margin: 0 0 4px; }
+svg.pp { display: block; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+svg.pp .pp-mua { fill: #d6d6d3; }
+svg.pp .pp-grid { stroke: #ececea; stroke-width: 1; }
+svg.pp .pp-frame { fill: none; stroke: #b9b9b5; }
+svg.pp .pp-tick { fill: #6a6a70; font-size: 10px; }
+svg.pp .pp-tick.mua, svg.pp .pp-axl.mua { fill: #9a9a96; }
+svg.pp .pp-axl { fill: #4a4a50; font-size: 11px; }
+svg.pp .pp-dot { fill: #8a8a90; }
+svg.pp .pp-dot.sua { fill: #3f3f45; }
+svg.pp .pp-hit { fill: transparent; }
+svg.pp g.pp-u { cursor: pointer; }
+svg.pp g.pp-u:hover .pp-dot { fill: var(--accent); }
+svg.pp g.pp-u.faint { opacity: .22; }
+svg.pp .pp-cur { fill: none; stroke: var(--accent); stroke-width: 2.2; }
+.pp-stats { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0 8px; }
+.pp-stats td { padding: 3px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+.pp-stats td.hit { color: var(--ok); font-weight: 600; }
+.pp-thumb { display: block; width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow: hidden; }
+.pp-thumb img { display: block; width: 100%; height: auto; }
+.pp-open { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+@media (max-width: 900px) { .pp-wrap { flex-direction: column; } #ppCard { flex: none; max-width: none; width: 100%; position: static; } }

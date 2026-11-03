@@ -8,7 +8,7 @@ import webbrowser
 
 from . import __version__, electro_gui, launchagent
 from .catalog import DEFAULT_ROOTS, Catalog
-from .notebook import Notebooks, render_markdown, write_atomic
+from .notebook import Notebooks, render_markdown, split_key, write_atomic
 from .settings import find_data_dir, load_settings
 
 DEFAULT_PORT = 8766
@@ -86,11 +86,12 @@ def cmd_rebuild(args):
     data_dir = _data_dir(args)
     tags = load_settings(data_dir)["tags"]
     notebooks = Notebooks(data_dir)
-    for sid in sorted(notebooks.summary()):
-        notebook = notebooks.load(sid)
-        write_atomic(notebooks.path(sid).with_suffix(".md"), render_markdown(notebook, tags))
-        written = electro_gui.sync_session(data_dir / "electro_gui", sid, notebook)
-        print(f"{sid}: {len(notebook['units'])} units, {len(written)} electro_gui configs")
+    for key in sorted(notebooks.summary()):
+        sid, sorting = split_key(key)
+        notebook = notebooks.load(sid, sorting)
+        write_atomic(notebooks.path(sid, sorting).with_suffix(".md"), render_markdown(notebook, tags))
+        written = electro_gui.sync_session(data_dir / "electro_gui", sid, notebook, sorting)
+        print(f"{key}: {len(notebook['units'])} units, {len(written)} electro_gui configs")
     return 0
 
 

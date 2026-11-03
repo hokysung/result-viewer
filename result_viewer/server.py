@@ -13,6 +13,7 @@ cross-site POST) gets 403.
 """
 from __future__ import annotations
 
+import csv
 import gzip
 import hmac
 import json
@@ -29,7 +30,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__, electro_gui, session_log
-from .notebook import host_tag
+from .notebook import host_tag, notebook_key
 from .settings import load_settings
 
 STATIC = Path(__file__).with_name("static")
@@ -193,14 +194,34 @@ class App:
         return {"sid": sid, "timeline": timeline, "log": log,
                 "plan": session_log.experiment_log(sid, settings["experiment_logs"])}
 
-    def snapshot(self, sid, unit_id):
-        """What the catalog says about a unit right now; None when the session is not mounted."""
-        session = self.catalog.session(sid)
+    def probe(self, sid):
+        """The Probe view's session-level data: ``tables/mua_profile.csv`` (sort-free MUA per channel,
+        phys-analysis ``session_viewer.profile``), shared by every sorting of the session; units and
+        their ``prof_*`` classes come with the session itself."""
+        found = self.catalog.sessions().get(sid)
+        if found is None:
+            raise LookupError(f"no session {sid}")
+        path = found[1] / sid / "tables" / "mua_profile.csv"
+        rows = []
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    try:
+                        rows.append({k: float(row[k]) for k in ("y_um", "mua_hz", "big_hz", "noise_uv")})
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        except FileNotFoundError:
+            rows = None
+        return {"sid": sid, "mua": rows}
+
+    def snapshot(self, sid, unit_id, sorting=None):
+        """What the catalog says about a unit of one sorting right now; None when the session is not mounted."""
+        session = self.catalog.session(sid, sorting)
         if session is None:
             return None
         unit = next((u for u in session["units"] if u["id"] == unit_id), None)
         if unit is None:
-            raise LookupError(f"unit {unit_id} is not in {sid}")
+            raise LookupError(f"unit {unit_id} is not in {sid}" + (f" ({sorting})" if sorting else ""))
         return {"quality": unit["quality"], "area": unit["area"], "peak_channel": unit["peak_channel"],
                 "depth_um": unit["depth_um"], "figure": unit["figures"]["raster"]["name"]}
 
@@ -306,7 +327,8 @@ def make_handler(app):
                 route = {"/api/health": self.health, "/api/config": self.config, "/api/sessions": self.sessions,
                          "/api/session": self.session, "/api/notebook": self.notebook,
                          "/api/electro_gui": self.electro_gui_status,
-                         "/api/timeline": lambda q, w: app.timeline(self._sid(q))}.get(path)
+                         "/api/timeline": lambda q, w: app.timeline(self._sid(q)[0]),
+                         "/api/probe": lambda q, w: app.probe(self._sid(q)[0])}.get(path)
                 if route is None:
                     raise HTTPError(404, "Not found.")
                 return self._json(route(query, where))
@@ -389,36 +411,46 @@ def make_handler(app):
                     "paths": {"data": str(app.data_dir), "notes": str(app.notebooks.notes_dir),
                               "configs": str(app.configs_root)}}
 
+        def _sortings(self, sid, noted):
+            """The catalog's sortings of ``sid``, each with its notebook's noted / flagged counts."""
+            none = {"noted": 0, "flagged": 0}
+            return [dict(s, **noted.get(notebook_key(sid, s["name"]), none)) for s in app.catalog.sortings(sid)]
+
         def sessions(self, query, where):
             noted = app.notebooks.summary()
             out = []
             for sid in app.catalog.sessions():
                 session = app.catalog.session(sid)
                 if session is not None:
+                    # n_units / noted / flagged: the default sorting, as before; "sortings": every sorting's
                     out.append({"id": sid, "root": session["root"], "n_units": len(session["units"]),
-                                **noted.get(sid, {"noted": 0, "flagged": 0})})
+                                **noted.get(sid, {"noted": 0, "flagged": 0}), "sortings": self._sortings(sid, noted)})
             return {"sessions": out}
 
         def _sid(self, query):
+            """``(sid, sorting)`` from ``?sid=&sorting=``; no or an empty ``sorting`` is the default sorting."""
             sid = query.get("sid", "")
-            app.notebooks.path(sid)  # validates
-            return sid
+            sorting = query.get("sorting") or None
+            notebook_key(sid, sorting)  # validates both
+            return sid, sorting
 
         def session(self, query, where):
-            sid = self._sid(query)
-            session = app.catalog.session(sid)
+            sid, sorting = self._sid(query)
+            session = app.catalog.session(sid, sorting)
             if session is None:
                 raise HTTPError(404, f"{sid} is not under any results root.")
-            return {"session": session, **self.notebook(query, where)}
+            return {"session": session, "sortings": self._sortings(sid, app.notebooks.summary()),
+                    **self.notebook(query, where)}
 
         def notebook(self, query, where):
-            sid = self._sid(query)
-            path = app.notebooks.path(sid)
-            mtime = app.notebooks.mtime(sid)
-            return {"notebook": app.notebooks.load(sid), "mtime": str(mtime) if mtime else None,
-                    "conflicts": app.notebooks.conflicts(sid),
+            sid, sorting = self._sid(query)
+            path = app.notebooks.path(sid, sorting)
+            mtime = app.notebooks.mtime(sid, sorting)
+            return {"notebook": app.notebooks.load(sid, sorting), "sorting": sorting,
+                    "mtime": str(mtime) if mtime else None,
+                    "conflicts": app.notebooks.conflicts(sid, sorting),
                     "files": {"json": str(path), "markdown": str(path.with_suffix(".md")),
-                              "configs": str(electro_gui.config_path(app.configs_root, sid, 0).parent)}}
+                              "configs": str(electro_gui.config_folder(app.configs_root, sid, sorting))}}
 
         def electro_gui_status(self, query, where):
             url, behind = app.electro_gui_target(where)
@@ -429,21 +461,22 @@ def make_handler(app):
 
         def post_note(self, body):
             sid = body.get("sid", "")
-            app.notebooks.path(sid)
+            sorting = body.get("sorting") or None
+            app.notebooks.path(sid, sorting)  # validates both
             try:
                 unit_id = int(body.get("unit"))
             except (TypeError, ValueError):
                 raise HTTPError(400, "unit must be an integer")
             changes = {k: body[k] for k in ("note", "tags", "flag") if k in body}
-            snapshot = app.snapshot(sid, unit_id)
-            notebook, entry = app.notebooks.update(sid, unit_id, changes, snapshot, app.settings()["tags"])
+            snapshot = app.snapshot(sid, unit_id, sorting)
+            notebook, entry = app.notebooks.update(sid, unit_id, changes, snapshot, app.settings()["tags"], sorting)
             warning = None
             try:
-                electro_gui.sync_unit(app.configs_root, sid, unit_id, entry)
+                electro_gui.sync_unit(app.configs_root, sid, unit_id, entry, sorting)
             except OSError as exc:
                 warning = f"electro_gui config not written: {exc}"
-            mtime = app.notebooks.mtime(sid)
-            return {"entry": entry, "notebook": notebook, "mtime": str(mtime) if mtime else None, "warning": warning}
+            mtime = app.notebooks.mtime(sid, sorting)
+            return {"entry": entry, "notebook": notebook, "sorting": sorting, "mtime": str(mtime) if mtime else None, "warning": warning}
 
     return Handler
 

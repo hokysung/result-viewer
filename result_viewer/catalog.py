@@ -14,6 +14,17 @@ one unit id of ``session.h5``; its rate raster defines it.  ``tables/units.csv``
 (written with ``session.h5``) gives each unit's current label, rate, stable
 trials, peak channel and depth.  A raster whose file name carries another label
 than the table's is shown as relabelled.
+
+That folder is the session's **default** sorting.  Other sortings of the same
+session are full exports of their own, one folder per sorting config::
+
+    <root>/<sid>/sortings/<name>/{session.h5, figures/..., tables/units.csv}
+
+listed only when their ``session.h5`` exists.  Unit ids of different sortings
+are unrelated.  A sorting's label comes from ``session.h5``'s ``meta["streams"]``
+(one name, or ``imec0 <a> · imec1 <b>`` when the streams differ).  ``sortings/``
+sits beside ``figures/``, so no figure scan reaches it; it is also skipped by
+name should it ever turn up inside ``figures/``.
 """
 from __future__ import annotations
 
@@ -24,6 +35,8 @@ import os
 import re
 import threading
 from pathlib import Path
+
+from .h5meta import session_meta
 
 DEFAULT_ROOTS = tuple(p for p in os.environ.get("SESSION_VIEWER_ROOTS", "").split(os.pathsep) if p) or (
     os.path.expanduser("~/viewer_sessions"),)
@@ -37,12 +50,13 @@ SESSION_FILE = "session.h5"
 RASTER_SUFFIX = "_rates_raster.png"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
 # Figure folders that hold no per-unit figures, or none of the raster's kind.
-SKIP_FIGURE_DIRS = {"unit_rasters", "unit_summaries", "panels"}
 # One folder per unit of separate panels (figures/panels/unit_NNNN_<q>_<tag>_<area>/<key>.png), described by
 # figures/panels/manifest.json: {"panels": [{"key", "title", "group", "desc"}, ...]} in display order.
 PANELS_DIR = ("figures", "panels")
 PANELS_MANIFEST = "manifest.json"
 PANELS_SESSION = "_session"       # figures/panels/_session/<key>.png: shown with every unit's panels
+SORTINGS_DIR = "sortings"
+SKIP_FIGURE_DIRS = {"unit_rasters", "unit_summaries", "panels", SORTINGS_DIR}
 
 RASTER_KIND = "raster"
 SORTER_KIND = "sorter_summary"
@@ -51,6 +65,31 @@ KIND_LABELS = {RASTER_KIND: "Raster", SORTER_KIND: "Sorter summary", PANELS_KIND
 
 _SESSION_ID_RE = re.compile(r"^(?P<subject>[A-Za-z0-9-]+)_(?P<date>[0-9]{8})$")
 _SLUG = r"[a-z0-9-]+"
+_SORTING_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+
+
+def valid_sorting(name):
+    """A sorting folder name (``ms5_lar_v6``); None stands for the default sorting."""
+    return name is None or (isinstance(name, str) and len(name) <= 100 and bool(_SORTING_RE.match(name)))
+
+
+def sorting_dir(root, sid, sorting=None):
+    """The export folder of one sorting of a session: ``<root>/<sid>`` or ``<root>/<sid>/sortings/<name>``."""
+    if not valid_sorting(sorting):
+        raise ValueError(f"not a sorting name: {sorting!r}")
+    base = Path(root) / sid
+    return base if sorting is None else base / SORTINGS_DIR / sorting
+
+
+def sorting_label(meta):
+    """The sorting named by ``meta["streams"]``: one name, or ``imec0 <a> · imec1 <b>``; None without one."""
+    streams = [s for s in (meta or {}).get("streams") or [] if isinstance(s, dict) and s.get("sorting")]
+    names = [str(s["sorting"]) for s in streams]
+    if not names:
+        return None
+    if len(set(names)) == 1:
+        return names[0]
+    return " · ".join(f"{s.get('stream') or '?'} {s['sorting']}" for s in streams)
 
 
 def _sanitize(text):
@@ -224,9 +263,9 @@ def _pick(candidates, quality):
     return pool[0] if len(pool) == 1 else max(pool, key=lambda c: _mtime(c[1]))
 
 
-def scan_session(root_index, root, sid):
-    """Every unit of one session with its figures, in unit-id order."""
-    session_dir = Path(root) / sid
+def scan_session(root_index, root, sid, sorting=None):
+    """Every unit of one sorting of a session (None: the default) with its figures, in unit-id order."""
+    session_dir = sorting_dir(root, sid, sorting)
     pat = _Patterns(sid)
 
     rasters = {}
@@ -298,7 +337,7 @@ def scan_session(root_index, root, sid):
             kinds[kind] = kinds.get(kind, 0) + 1
     order = ([PANELS_KIND] if PANELS_KIND in kinds else []) + [RASTER_KIND] + ([SORTER_KIND] if SORTER_KIND in kinds else [])
     order += sorted(k for k in kinds if k not in order)
-    return {"id": sid, "root": str(root), "root_index": root_index,
+    return {"id": sid, "sorting": sorting, "root": str(root), "root_index": root_index,
             "views": [{"kind": k, "label": kind_label(k), "n": kinds[k]} for k in order if k in kinds],
             "panels": manifest, "units": [units[u] for u in sorted(units)]}
 
@@ -343,6 +382,15 @@ def _panels(root_index, root, session_dir, pat, units):
     return listed + [{"key": k, "title": k.replace("_", " "), "group": ""} for k in sorted(seen - set(order))]
 
 
+def _count_rows(path):
+    """Units in a ``units.csv``: rows with a ``unit_id``."""
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return sum(1 for row in csv.DictReader(handle) if (row.get("unit_id") or "").strip())
+    except OSError:
+        return None
+
+
 def _figure(root_index, root, entry, figure_quality, unit_quality):
     rel = Path(entry.path).relative_to(root).as_posix()
     out = {"url": f"/fig/{root_index}/{rel}", "name": entry.name}
@@ -372,20 +420,75 @@ class Catalog:
                     seen[sid] = (index, root)
         return seen
 
-    def session(self, sid):
+    def session(self, sid, sorting=None):
+        """One sorting of a session (None: the default), or None when the session is not under any root.
+
+        Raises LookupError for a sorting the session does not have.
+        """
         found = self.sessions().get(sid)
         if found is None:
             return None
         index, root = found
-        sig = _signature(root / sid)
+        if sorting is not None and sorting not in self._alternates(root, sid):
+            raise LookupError(f"{sid} has no sorting {sorting!r}")
+        key = (sid, sorting)
+        sig = _signature(sorting_dir(root, sid, sorting))
         with self._lock:
-            hit = self._cache.get(sid)
+            hit = self._cache.get(key)
             if hit and hit[0] == sig and hit[1]["root_index"] == index:
                 return hit[1]
-        scanned = scan_session(index, root, sid)
+        scanned = scan_session(index, root, sid, sorting)
         with self._lock:
-            self._cache[sid] = (sig, scanned)
+            self._cache[key] = (sig, scanned)
         return scanned
+
+    @staticmethod
+    def _alternates(root, sid):
+        """Names of the ``sortings/<name>/`` folders of a session that hold a ``session.h5``, sorted."""
+        base = Path(root) / sid / SORTINGS_DIR
+        try:
+            with os.scandir(base) as it:
+                names = [e.name for e in it if e.is_dir() and valid_sorting(e.name)]
+        except OSError:
+            return []
+        return sorted(n for n in names if (base / n / SESSION_FILE).is_file())
+
+    def sortings(self, sid):
+        """``[{"name", "label", "is_default", "n_units"}]`` of a session: the default first (name None), then
+        the alternates by name.  ``label`` is the sorting ``session.h5`` names, the default's marked
+        "(default)"; ``n_units`` counts the rows of ``tables/units.csv`` (None without one).  Empty when
+        the session is not under any root."""
+        found = self.sessions().get(sid)
+        if found is None:
+            return []
+        _index, root = found
+        out = []
+        for name in [None] + self._alternates(root, sid):
+            folder = sorting_dir(root, sid, name)
+            label = self._cached(("meta", str(folder)), folder / SESSION_FILE,
+                                 lambda path: sorting_label(session_meta(path))) or name
+            if name is None:
+                label = f"{label} (default)" if label else "default"
+            out.append({"name": name, "label": label, "is_default": name is None,
+                        "n_units": self._cached(("n_units", str(folder)), folder.joinpath(*TABLES_DIR, STABILITY_TABLE),
+                                                _count_rows)})
+        return out
+
+    def _cached(self, key, path, compute):
+        """``compute(path)``, recomputed only when ``path``'s mtime or size changes; None when it is missing."""
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        sig = (st.st_mtime_ns, st.st_size)
+        with self._lock:
+            hit = self._cache.get(key)
+        if hit and hit[0] == sig:
+            return hit[1]
+        value = compute(path)
+        with self._lock:
+            self._cache[key] = (sig, value)
+        return value
 
     def resolve_figure(self, root_index, rel):
         """The file under root ``root_index`` named by ``rel``, or None if it escapes the root or is not an image."""

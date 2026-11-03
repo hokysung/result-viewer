@@ -33,6 +33,16 @@
     conn_latency_ms: {label: 'Pulse latency (ms)', op: 'max', v: 6, tip: 'peak of the excess histogram, only where pulse p < 0.01'},
     conn_train_p: {label: 'Train p', op: 'max', v: 0.001, tip: 'two-sided Poisson p: rate during the 1 s train vs the second before'},
     conn_train_ratio: {label: 'Train ratio', op: 'min', v: 1.5, tip: 'rate during the train / the second before (below 1: suppressed)'},
+    prof_epoch_p: {label: 'Epoch-modulated p', op: 'max', v: 0.01, tip: 'probe profile: cue / late / reward vs fixation, Wilcoxon, Bonferroni over 3'},
+    prof_task_p: {label: 'Task-selective p', op: 'max', v: 0.01, tip: 'probe profile: MS / SP / PM differ in cue or late, Kruskal–Wallis, Bonferroni over 2'},
+    prof_task_precue_p: {label: 'Task p before the cue', op: 'max', v: 0.01, tip: 'probe profile: the task test before the cue (a control: tasks are interleaved)'},
+    prof_task_eta2: {label: 'Task η² (late)', op: 'min', v: 0.02},
+    prof_pulse_p: {label: 'Pulse p 2.5–20 ms', op: 'max', v: 0.01, tip: 'probe profile: spikes 2.5–20 ms after single FEF pulses vs −20…−3 ms, one-sided Poisson'},
+    prof_pulse_ratio: {label: 'Pulse ratio 2.5–20 ms', op: 'min', v: 1.2},
+    prof_pulse_ctrl_p: {label: 'Pulse control p', op: 'min', v: 0.01, tip: 'the pulse test at mid-interval, where no pulse is'},
+    prof_train_p: {label: 'Train-responsive p', op: 'max', v: 0.05, tip: 'probe profile: 50–350 ms after train offset, stim vs sham, Mann–Whitney, Bonferroni over contexts'},
+    prof_train_ratio: {label: 'Train stim/sham', op: 'min', v: 1.2},
+    prof_n_task_trials: {label: 'Stable task trials', op: 'min', v: 60},
   };
   const QC_PRESETS = [
     {label: 'Watters', tip: 'Watters et al. 2026 inclusion: mean rate ≥ 1 Hz and ≥ 300 stable completed trials',
@@ -41,6 +51,10 @@
      crit: [{key: 'conn_pulse_p', op: 'max', v: 0.001}]},
     {label: 'Train-modulated', tip: 'Connectivity: rate changes over the 1 s train, p ≤ 0.001',
      crit: [{key: 'conn_train_p', op: 'max', v: 0.001}]},
+    {label: 'Epoch-modulated', tip: 'Probe profile: responds to task events (p < 0.01)', crit: [{key: 'prof_epoch_p', op: 'max', v: 0.0099}]},
+    {label: 'Task-selective', tip: 'Probe profile: MS / SP / PM differ (p < 0.01)', crit: [{key: 'prof_task_p', op: 'max', v: 0.0099}]},
+    {label: 'Pulse 2.5–20 ms', tip: 'Probe profile: excited 2.5–20 ms after single FEF pulses (p < 0.01)', crit: [{key: 'prof_pulse_p', op: 'max', v: 0.0099}]},
+    {label: 'Train-responsive', tip: 'Probe profile: stim ≠ sham after train offset (p < 0.05)', crit: [{key: 'prof_train_p', op: 'max', v: 0.0499}]},
   ];
   const metricLabel = k => (METRICS[k] ? METRICS[k].label : k.replace(/_/g, ' '));
   const fmtNum = v => (v == null ? '–' : v === 0 ? '0' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? String(+v.toFixed(2))
@@ -72,7 +86,8 @@
   };
 
   const S = {
-    config: null, sessions: [], sid: null, session: null, units: [], byId: new Map(),
+    // sorting: the open sorting's folder name under <sid>/sortings/, null for the session's default sorting
+    config: null, sessions: [], sid: null, sorting: null, sortings: [], session: null, units: [], byId: new Map(),
     notebook: {units: {}}, mtime: null, conflicts: [], files: {},
     filtered: [], cur: null, view: store.get('view', 'raster'), zoom: false,
     filters: Object.assign(noFilters(), store.get('filters', {})),
@@ -89,6 +104,12 @@
   const upper = s => (s ? String(s).toUpperCase() : '');
   const viewLabel = kind => { const v = S.session && S.session.views.find(x => x.kind === kind); return v ? v.label : kind; };
   const qRank = q => { const i = Q_ORDER.indexOf(q); return i < 0 ? Q_ORDER.length : i; };
+  /* A notebook is one sorting of one session: "<sid>" (default sorting) or "<sid>@<sorting>", as on the server.
+   * Unit ids of two sortings are unrelated, so everything per unit (notes, last unit) is keyed by this. */
+  const nbKey = (sid, sorting) => (sorting ? `${sid}@${sorting}` : sid);
+  const curKey = () => nbKey(S.sid, S.sorting);
+  const nbTarget = () => ({sid: S.sid, sorting: S.sorting, key: curKey()});
+  const sortingQuery = sorting => (sorting ? '&sorting=' + encodeURIComponent(sorting) : '');
   const prettySid = sid => { const m = /^sub-([^_]+)_ses-(\d{4})_(\d\d)_(\d\d)/.exec(sid); return m ? `${m[1]} ${m[2]}-${m[3]}-${m[4]}` : sid; };
 
   async function api(path, opts = {}) {
@@ -148,7 +169,7 @@
     const h = parseHash();
     const known = sid => sid && sessions.some(s => s.id === sid);
     const sid = known(h.s) ? h.s : known(store.get('session')) ? store.get('session') : sessions[sessions.length - 1].id;
-    await openSession(sid, h.u, h.v);
+    await openSession(sid, h.u, h.v, sid === h.s ? h.so : null);
     egLoop(true);
     setInterval(poll, 15000);
   }
@@ -156,27 +177,38 @@
   function parseHash() {
     const p = new URLSearchParams(location.hash.slice(1));
     const u = p.get('u');
-    return {s: p.get('s'), u: u != null && u !== '' && Number.isFinite(Number(u)) ? Number(u) : null, v: p.get('v')};
+    // sorting: absent = the session's default sorting
+    return {s: p.get('s'), so: p.get('sorting') || null,
+            u: u != null && u !== '' && Number.isFinite(Number(u)) ? Number(u) : null, v: p.get('v')};
   }
 
   function writeHash() {
     if (!S.sid) return;
-    const p = new URLSearchParams({s: S.sid, u: S.cur == null ? '' : S.cur, v: S.view});
+    const p = new URLSearchParams({s: S.sid});
+    if (S.sorting) p.set('sorting', S.sorting);
+    p.set('u', S.cur == null ? '' : S.cur);
+    p.set('v', S.view);
     history.replaceState(null, '', '#' + p.toString());
   }
 
-  async function openSession(sid, unitId = null, view = null) {
+  async function openSession(sid, unitId = null, view = null, sorting = null) {
     flushNote();
-    $('title').textContent = `Loading ${prettySid(sid)}…`;
+    $('title').textContent = `Loading ${prettySid(sid)}${sorting ? ` · ${sorting}` : ''}…`;
     let data;
     try {
-      data = await api('/api/session?sid=' + encodeURIComponent(sid));
+      data = await api('/api/session?sid=' + encodeURIComponent(sid) + sortingQuery(sorting));
     } catch (e) {
+      if (sorting && e.status === 404) {  // a link to a sorting this session no longer has: open its default
+        toast(`${sid} has no sorting ${sorting}; showing its default sorting`, 5000);
+        return openSession(sid, null, view, null);
+      }
       toast(`Cannot open ${sid}: ${e.message}`, 5000);
-      if (S.sid) $('session').value = S.sid;
+      if (S.sid) { $('session').value = S.sid; $('sorting').value = S.sorting || ''; }
       return;
     }
     S.sid = sid;
+    S.sorting = sorting;
+    S.sortings = data.sortings || [];
     S.session = data.session;
     S.units = data.session.units;
     S.byId = new Map(S.units.map(u => [u.id, u]));
@@ -186,12 +218,15 @@
     S.files = data.files || {};
     store.set('session', sid);
     $('session').value = sid;
-    S.session.views = [SESSION_VIEW].concat(S.session.views.filter(v => v.kind !== SESSION_VIEW.kind));
+    S.session.views = [SESSION_VIEW, PROBE_VIEW].concat(S.session.views.filter(v => v.kind !== SESSION_VIEW.kind && v.kind !== PROBE_VIEW.kind));
+    renderSortingSelect();
     if (view) S.view = view;
     if (!S.session.views.some(v => v.kind === S.view)) S.view = 'raster';
     loadTimeline(sid);
+    if ($('probePane')) $('probePane').innerHTML = '';
+    loadProbe(sid);
     computeFiltered();
-    let target = unitId != null && S.byId.has(unitId) ? unitId : store.get('last.' + sid, null);
+    let target = unitId != null && S.byId.has(unitId) ? unitId : store.get('last.' + curKey(), null);
     if (target == null || !S.byId.has(target)) target = S.filtered.length ? S.filtered[0] : (S.units.length ? S.units[0].id : null);
     S.cur = null;
     renderFilters();
@@ -354,6 +389,7 @@
     renderFilters();
     renderQc();
     renderList();
+    if (S.view === PROBE_VIEW.kind && $('ppBox')) renderProbe();
     if (S.filtered.length && !S.filtered.includes(S.cur)) {
       const next = nearestFiltered(1);
       go(next != null ? next : S.filtered[S.filtered.length - 1]);
@@ -470,13 +506,30 @@
       : `<li class="empty small">No notes in this session yet. Write in the box, press 1–${S.config.tags.length} to tag, f to flag.</li>`);
     const opt = $('session').querySelector(`option[value="${CSS.escape(S.sid)}"]`);
     const info = S.sessions.find(s => s.id === S.sid);
-    if (opt && info) { info.noted = ids.length; opt.textContent = sessionLabel(info); }
+    if (opt && info && !S.sorting) { info.noted = ids.length; opt.textContent = sessionLabel(info); }
+    const so = S.sortings.find(s => (s.name || null) === S.sorting);
+    if (so) { so.noted = ids.length; renderSortingSelect(); }
   }
 
+  // the session list's counts are the default sorting's
   function sessionLabel(s) { return `${prettySid(s.id)} · ${s.n_units} units${s.noted ? ` · ${s.noted} noted` : ''}`; }
 
   function renderSessionSelect() {
     $('session').innerHTML = S.sessions.map(s => `<option value="${esc(s.id)}">${esc(sessionLabel(s))}</option>`).join('');
+  }
+
+  function sortingLabel(s) {
+    return `${s.label}${s.n_units != null ? ` · ${s.n_units} units` : ''}${s.noted ? ` · ${s.noted} noted` : ''}`;
+  }
+
+  /** The sorting picker: shown only when the open session has more than one sorting. */
+  function renderSortingSelect() {
+    const sel = $('sorting');
+    sel.hidden = S.sortings.length < 2;
+    sel.innerHTML = S.sortings.map(s => `<option value="${esc(s.name || '')}">${esc(sortingLabel(s))}</option>`).join('');
+    sel.value = S.sorting || '';
+    const cur = S.sortings.find(s => (s.name || null) === S.sorting);
+    sel.title = `Spike sorting of this session${cur ? `: ${cur.label}` : ''}. Unit ids differ between sortings; each has its own notes.`;
   }
 
   function renderConflicts() {
@@ -520,7 +573,7 @@
     if (S.cur !== id) flushNote();
     const changed = S.cur !== id;
     S.cur = id;
-    store.set('last.' + S.sid, id);
+    store.set('last.' + curKey(), id);
     writeHash();
     renderUnit(changed);
   }
@@ -555,7 +608,7 @@
     if (u.peak_channel != null) bits.push(`ch ${u.peak_channel}`);
     if (u.depth_um != null) bits.push(`${u.depth_um} µm`);
     $('title').textContent = bits.filter(Boolean).join(' · ');
-    document.title = `Unit ${u.id} · ${prettySid(S.sid)}`;
+    document.title = `Unit ${u.id} · ${prettySid(S.sid)}${S.sorting ? ` · ${S.sorting}` : ''}`;
     renderBadges();
     renderViews();
     showFigure();
@@ -589,8 +642,9 @@
   function renderViews() {
     const u = S.byId.get(S.cur);
     $('views').innerHTML = S.session.views.map(v => {
-      const has = v.kind === SESSION_VIEW.kind || (u && u.figures[v.kind]);
-      return `<button class="view${has ? '' : ' missing'}${v.kind === SESSION_VIEW.kind ? ' session' : ''}" data-kind="${esc(v.kind)}" aria-current="${v.kind === S.view}" title="${esc(v.label)}${has ? '' : ' (none for this unit)'}">${esc(v.label)}</button>`;
+      const whole = v.kind === SESSION_VIEW.kind || v.kind === PROBE_VIEW.kind;
+      const has = whole || (u && u.figures[v.kind]);
+      return `<button class="view${has ? '' : ' missing'}${whole ? ' session' : ''}" data-kind="${esc(v.kind)}" aria-current="${v.kind === S.view}" title="${esc(v.label)}${has ? '' : ' (none for this unit)'}">${esc(v.label)}</button>`;
     }).join('');
     const cur = $('views').querySelector('[aria-current="true"]');
     if (cur) cur.scrollIntoView({block: 'nearest', inline: 'nearest'});
@@ -919,7 +973,171 @@
   });
   $('sessionPane').addEventListener('input', e => { if (e.target.id === 'tlSearch') renderLog(); });
   let resizeTimer = null;
-  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { renderStrip(); if (S.view === SESSION_VIEW.kind) renderSessionSvg(); }, 150); });
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { renderStrip(); if (S.view === SESSION_VIEW.kind) renderSessionSvg(); if (S.view === PROBE_VIEW.kind) renderProbePlot(); }, 150); });
+
+  // ---------------------------------------------------------------- probe
+  /* The Probe view: every unit at its depth (µm above the probe tip, tables/units.csv depth_um) against its
+   * session mean rate, marked by its probe-profile classes (the prof_* columns, phys-analysis
+   * session_viewer.profile), over the sort-free MUA profile (tables/mua_profile.csv via /api/probe).
+   * Units outside the filters / QC are faint (or hidden). Click a unit to inspect it here; double-click
+   * (or the raster thumbnail) opens its raster. ← / → still step through the filtered list. */
+  const PROBE_VIEW = {kind: 'probe', label: 'Probe', n: 0};
+  const PROBE_CLASSES = [
+    {key: 'epoch', metric: 'prof_epoch_p', alpha: 0.01, label: 'epoch-modulated', color: '#8172B3', shape: 'ring',
+     tip: 'cue (0.05–0.35 s), late (0.35–0.8 s) or reward (0–0.3 s) differs from fixation (−0.3–0 s); Wilcoxon, Bonferroni over 3, p < 0.01'},
+    {key: 'task', metric: 'prof_task_p', alpha: 0.01, label: 'task-selective', color: '#C44E52', shape: 'x', control: 'prof_task_precue_p',
+     tip: 'MS / SP / PM differ in the cue or late epoch; Kruskal–Wallis, Bonferroni over 2, p < 0.01. Control: the same test before the cue'},
+    {key: 'pulse', metric: 'prof_pulse_p', alpha: 0.01, label: 'pulse-excited 2.5–20 ms', color: '#DD8452', shape: 'tri', control: 'prof_pulse_ctrl_p',
+     tip: 'single FEF pulses: spikes 2.5–20 ms after the TTL vs −20…−3 ms, one-sided Poisson p < 0.01. The test is anti-conservative: read it against the mid-interval control'},
+    {key: 'train', metric: 'prof_train_p', alpha: 0.05, label: 'train-responsive', color: '#2f9e44', shape: 'sq',
+     tip: 'rate 50–350 ms after train offset, stim vs sham, Mann–Whitney, Bonferroni over contexts, p < 0.05'},
+  ];
+  S.probe = null;
+  S.probeShow = Object.assign({epoch: true, task: true, pulse: true, train: true}, store.get('probeShow', {}));
+  S.probeOnly = store.get('probeOnly', false);
+  const inClass = (u, c) => { const v = metric(u, c.metric); return v != null && v < c.alpha; };
+  const hasProfile = () => S.units.some(u => PROBE_CLASSES.some(c => metric(u, c.metric) != null));
+
+  async function loadProbe(sid) {
+    S.probe = null;
+    try {
+      const data = await api('/api/probe?sid=' + encodeURIComponent(sid));
+      if (S.sid !== sid) return;
+      S.probe = data;
+    } catch (e) {
+      if (S.sid !== sid) return;
+      S.probe = {error: e.message, mua: null};
+    }
+    if (S.view === PROBE_VIEW.kind) renderProbe();
+  }
+
+  function probeSvg(width, height) {
+    const L = 58, R = 14, T = 30, B = 40, pw = Math.max(width - L - R, 80), ph = Math.max(height - T - B, 120);
+    const pts = S.units.filter(u => u.depth_um != null && u.rate_hz != null && u.rate_hz > 0);
+    const mua = (S.probe && S.probe.mua) || [];
+    const ys = pts.map(u => u.depth_um).concat(mua.map(m => m.y_um));
+    const y0 = Math.min(0, ...ys) - 50, y1 = Math.max(3840, ...ys) + 50;
+    const lx = pts.map(u => Math.log10(Math.max(u.rate_hz, 0.03)));
+    const x0 = Math.floor(Math.min(-1, ...lx) * 2) / 2, x1 = Math.ceil(Math.max(1, ...lx) * 2) / 2;
+    const X = v => L + (v - x0) / (x1 - x0) * pw, Y = d => T + (1 - (d - y0) / (y1 - y0)) * ph;
+    let g = '';
+    // MUA area, 100 µm bins
+    if (mua.length) {
+      const bins = new Map();
+      for (const m of mua) { const k = Math.floor(m.y_um / 100) * 100; const b = bins.get(k) || [0, 0]; b[0] += m.mua_hz; b[1] += 1; bins.set(k, b); }
+      const rows = Array.from(bins.entries()).sort((a, b) => a[0] - b[0]).map(([k, b]) => [k + 50, b[0] / b[1]]);
+      const mmax = Math.max(60, ...rows.map(r => r[1]) ) * 1.05;
+      const MX = v => L + v / mmax * pw;
+      const poly = [[0, rows[0][0]]].concat(rows).concat([[0, rows[rows.length - 1][0]]]).map(([v, d]) => `${MX(v).toFixed(1)},${Y(d).toFixed(1)}`).join(' ');
+      g += `<polygon class="pp-mua" points="${poly}"><title>sort-free MUA (threshold crossings, Hz), 100 µm bins</title></polygon>`;
+      for (const v of [0, 20, 40, 60].filter(v => v <= mmax)) g += `<text class="pp-tick mua" x="${MX(v)}" y="${T - 8}" text-anchor="middle">${v}</text>`;
+      g += `<text class="pp-axl mua" x="${L + pw}" y="${T - 20}" text-anchor="end">sort-free MUA (Hz), grey</text>`;
+    }
+    // axes
+    for (let d = Math.ceil(y0 / 500) * 500; d <= y1; d += 500) g += `<line class="pp-grid" x1="${L}" x2="${L + pw}" y1="${Y(d)}" y2="${Y(d)}"/><text class="pp-tick" x="${L - 6}" y="${Y(d) + 4}" text-anchor="end">${d}</text>`;
+    for (const hz of [0.03, 0.1, 0.3, 1, 3, 10, 30, 100]) {
+      const v = Math.log10(hz);
+      if (v < x0 || v > x1) continue;
+      g += `<line class="pp-grid" x1="${X(v)}" x2="${X(v)}" y1="${T}" y2="${T + ph}"/><text class="pp-tick" x="${X(v)}" y="${T + ph + 15}" text-anchor="middle">${hz}</text>`;
+    }
+    g += `<rect class="pp-frame" x="${L}" y="${T}" width="${pw}" height="${ph}"/>`;
+    g += `<text class="pp-axl" x="${L + pw / 2}" y="${height - 6}" text-anchor="middle">session mean rate (Hz, log)</text>`;
+    g += `<text class="pp-axl" transform="translate(14 ${T + ph / 2}) rotate(-90)" text-anchor="middle">µm above the probe tip</text>`;
+    // units: faint ones first, the current unit last
+    const keep = new Set(S.filtered);
+    const order = pts.slice().sort((a, b) => (keep.has(a.id) - keep.has(b.id)) || (a.id === S.cur) - (b.id === S.cur));
+    for (const u of order) {
+      const on = keep.has(u.id);
+      if (!on && S.probeOnly) continue;
+      const cx = X(Math.log10(Math.max(u.rate_hz, 0.03))), cy = Y(u.depth_um);
+      let m = `<circle class="pp-dot ${esc(u.quality)}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3"/>`;
+      for (const c of PROBE_CLASSES) {
+        if (!S.probeShow[c.key] || !inClass(u, c)) continue;
+        const s = `stroke="${c.color}"`;
+        if (c.shape === 'ring') m += `<circle cx="${cx}" cy="${cy}" r="5.5" fill="none" ${s} stroke-width="1.3"/>`;
+        else if (c.shape === 'x') m += `<path d="M${cx - 4.5},${cy - 4.5}L${cx + 4.5},${cy + 4.5}M${cx - 4.5},${cy + 4.5}L${cx + 4.5},${cy - 4.5}" ${s} stroke-width="1.6"/>`;
+        else if (c.shape === 'tri') m += `<path d="M${cx},${cy - 9}L${cx + 8},${cy + 5.5}L${cx - 8},${cy + 5.5}Z" fill="none" ${s} stroke-width="1.4"/>`;
+        else if (c.shape === 'sq') m += `<rect x="${cx - 7.5}" y="${cy - 7.5}" width="15" height="15" fill="none" ${s} stroke-width="1.4"/>`;
+      }
+      if (u.id === S.cur) m += `<circle class="pp-cur" cx="${cx}" cy="${cy}" r="11"/>`;
+      const cls = PROBE_CLASSES.filter(c => inClass(u, c)).map(c => c.label).join(', ');
+      g += `<g class="pp-u${on ? '' : ' faint'}" data-id="${u.id}"><title>Unit ${u.id} · ${esc(upper(u.quality))} · ${u.depth_um} µm · ${fmtRate(u.rate_hz)} Hz${cls ? '\n' + esc(cls) : ''}</title>` +
+        `<circle class="pp-hit" cx="${cx}" cy="${cy}" r="9"/>${m}</g>`;
+    }
+    return `<svg class="pp" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Units along the probe">${g}</svg>`;
+  }
+
+  function probeCard() {
+    const u = S.byId.get(S.cur);
+    if (!u) return '<p class="muted">Click a unit.</p>';
+    const bits = [`Unit ${u.id}`, upper(u.quality), upper(u.area)];
+    if (u.peak_channel != null) bits.push(`ch ${u.peak_channel}`);
+    if (u.depth_um != null) bits.push(`${u.depth_um} µm`);
+    const row = (label, p, alpha, extra, tip) => {
+      const tested = p != null, hit = tested && p < alpha;
+      return `<tr title="${esc(tip || '')}"><td>${esc(label)}</td><td class="${hit ? 'hit' : ''}">${tested ? `p ${fmtNum(p)}${hit ? ' ✓' : ''}` : '<span class="muted">not tested</span>'}</td><td class="muted">${extra || ''}</td></tr>`;
+    };
+    const m = k => metric(u, k);
+    let html = `<h3>${esc(bits.filter(Boolean).join(' · '))}</h3>`;
+    html += `<p class="muted small">${u.rate_hz != null ? `${fmtRate(u.rate_hz)} Hz` : ''}${u.n_trials != null ? ` · stable ${u.n_stable}/${u.n_trials} trials` : ''}` +
+      `${m('prof_n_task_trials') != null ? ` · ${m('prof_n_task_trials')} stable task trials` : ''}${S.filtered.includes(u.id) ? '' : ' · <b>outside the filters</b>'}</p>`;
+    html += '<table class="pp-stats"><tbody>' +
+      row('Epoch-modulated', m('prof_epoch_p'), 0.01, '', PROBE_CLASSES[0].tip) +
+      row('Task-selective', m('prof_task_p'), 0.01, [m('prof_task_eta2') != null ? `η² ${fmtNum(m('prof_task_eta2'))}` : '', m('prof_task_precue_p') != null ? `pre-cue p ${fmtNum(m('prof_task_precue_p'))}` : ''].filter(Boolean).join(' · '), PROBE_CLASSES[1].tip) +
+      row('Pulse 2.5–20 ms', m('prof_pulse_p'), 0.01, [m('prof_pulse_ratio') != null ? `×${fmtNum(m('prof_pulse_ratio'))}` : '', m('prof_pulse_ctrl_p') != null ? `control p ${fmtNum(m('prof_pulse_ctrl_p'))}` : ''].filter(Boolean).join(' · '), PROBE_CLASSES[2].tip) +
+      row('Train, after offset', m('prof_train_p'), 0.05, m('prof_train_ratio') != null ? `stim/sham ×${fmtNum(m('prof_train_ratio'))} (best context)` : '', PROBE_CLASSES[3].tip) +
+      (m('conn_pulse_p') != null ? row('Pulse 0.5–6 ms (conn)', m('conn_pulse_p'), 0.001, m('conn_latency_ms') != null ? `@ ${fmtNum(m('conn_latency_ms'))} ms` : '', METRICS.conn_pulse_p.tip) : '') +
+      '</tbody></table>';
+    const fig = u.figures && u.figures.raster;
+    if (fig) html += `<button class="pp-thumb" data-open="raster" title="Open the raster (double-click a unit does the same)"><img src="${esc(fig.url)}" alt="raster of unit ${u.id}" loading="lazy"></button>`;
+    const kinds = S.session.views.filter(v => v.kind !== SESSION_VIEW.kind && v.kind !== PROBE_VIEW.kind && u.figures[v.kind]);
+    html += '<div class="pp-open">' + kinds.map(v => `<button class="chip" data-open="${esc(v.kind)}">${esc(v.label)} ↗</button>`).join('') + '</div>';
+    return html;
+  }
+
+  function renderProbe() {
+    const pane = $('probePane');
+    const counts = PROBE_CLASSES.map(c => {
+      const tested = S.units.filter(u => metric(u, c.metric) != null), hit = tested.filter(u => inClass(u, c)).length;
+      const ctrl = c.control ? S.units.filter(u => { const v = metric(u, c.control); return v != null && v < c.alpha; }).length : null;
+      return {c, tested: tested.length, hit, ctrl};
+    });
+    let head = '<div class="pp-head">' + counts.map(({c, tested, hit, ctrl}) =>
+      `<button class="chip" data-pc="${c.key}" aria-pressed="${!!S.probeShow[c.key]}" title="${esc(c.tip)}"${tested ? '' : ' disabled'}>` +
+      `<span class="tdot" style="--c:${c.color}"></span>${esc(c.label)} ${tested ? `${hit}/${tested}` : 'n/a'}` +
+      `${ctrl != null && tested ? ` <small class="muted">(control ${ctrl})</small>` : ''}</button>`).join('') +
+      `<button class="chip" data-pc="only" aria-pressed="${!!S.probeOnly}" title="Hide the units outside the filters and QC instead of fading them">only filtered units</button></div>`;
+    if (!hasProfile()) head += '<p class="warn small">This export has no probe-profile columns yet (phys-analysis: <code>python -m session_viewer refresh &lt;session.h5&gt;</code>). Units are shown by depth and rate only.</p>';
+    if (S.probe && !S.probe.mua) head += '<p class="muted small">No <code>tables/mua_profile.csv</code> in this export: the sort-free MUA profile is not drawn.</p>';
+    pane.innerHTML = head + '<div class="pp-wrap"><div id="ppBox"></div><div id="ppCard"></div></div>';
+    renderProbePlot();
+  }
+
+  function renderProbePlot() {
+    const box = $('ppBox');
+    if (!box) return;
+    const w = Math.max(box.clientWidth || 520, 300), h = Math.max(Math.min(window.innerHeight - 230, 900), 420);
+    box.innerHTML = probeSvg(w, h);
+    $('ppCard').innerHTML = probeCard();
+  }
+
+  $('probePane').addEventListener('click', e => {
+    const chip = e.target.closest('[data-pc]');
+    if (chip) {
+      if (chip.dataset.pc === 'only') { S.probeOnly = !S.probeOnly; store.set('probeOnly', S.probeOnly); }
+      else { S.probeShow[chip.dataset.pc] = !S.probeShow[chip.dataset.pc]; store.set('probeShow', S.probeShow); }
+      renderProbe();
+      return;
+    }
+    const open = e.target.closest('[data-open]');
+    if (open) { setView(open.dataset.open); return; }
+    const pt = e.target.closest('g.pp-u');
+    if (pt) go(Number(pt.dataset.id));
+  });
+  $('probePane').addEventListener('dblclick', e => {
+    const pt = e.target.closest('g.pp-u');
+    if (pt) { go(Number(pt.dataset.id)); setView('raster'); }
+  });
 
   // ---------------------------------------------------------------- panels
   /* figures/panels/<unit>/<key>.png, one PNG per alignment x condition (catalog: unit.figures.panels.panels,
@@ -1027,12 +1245,18 @@
     const u = S.byId.get(S.cur), fig = u && u.figures[S.view];
     const img = $('img'), msg = $('figMsg'), box = $('figure');
     const mine = ++figSeq;
-    const onSession = S.view === SESSION_VIEW.kind, onPanels = S.view === 'panels';
-    box.hidden = onSession || onPanels;
+    const onSession = S.view === SESSION_VIEW.kind, onProbe = S.view === PROBE_VIEW.kind, onPanels = S.view === 'panels';
+    box.hidden = onSession || onProbe || onPanels;
     $('sessionPane').hidden = !onSession;
+    $('probePane').hidden = !onProbe;
     $('panelPane').hidden = !onPanels;
     renderStrip();
     if (onPanels) { spinner(false); renderPanels(); return; }
+    if (onProbe) {
+      spinner(false);
+      if ($('ppBox')) renderProbePlot(); else renderProbe();  // a new unit: redraw the plot and its card
+      return;
+    }
     if (onSession) {
       spinner(false);
       if ($('tlBox')) renderSessionSvg(); else renderSession();  // a new unit: only its lane changes
@@ -1155,7 +1379,8 @@
   // ----------------------------------------------------------------- notes
   let dirty = null, noteTimer = null, pending = 0, chain = Promise.resolve();
   const noteBox = $('note');
-  const editingHere = () => document.activeElement === noteBox || (dirty && dirty.sid === S.sid && dirty.unit === S.cur);
+  // dirty.nb, and save()'s / optimistic()'s first argument: nbTarget() of the notebook the edit belongs to
+  const editingHere = () => document.activeElement === noteBox || (dirty && dirty.nb.key === curKey() && dirty.unit === S.cur);
 
   function renderNoteEditor(force) {
     if (!force && editingHere()) return;
@@ -1186,8 +1411,8 @@
   }
 
   /** Apply changes to the local copy right away; the server's answer replaces it once nothing is queued. */
-  function optimistic(sid, unit, changes) {
-    if (sid !== S.sid) return;
+  function optimistic(nb, unit, changes) {
+    if (nb.key !== curKey()) return;
     const key = String(unit);
     const next = Object.assign({unit_id: unit, note: '', tags: [], flag: false}, S.notebook.units[key] || {}, changes);
     if (!(next.note || '').trim() && !(next.tags || []).length && !next.flag) delete S.notebook.units[key];
@@ -1203,15 +1428,16 @@
     renderPos();
   }
 
-  function save(sid, unit, changes, keepalive = false) {
+  function save(nb, unit, changes, keepalive = false) {
     pending++;
     setSave('saving');
+    const body = Object.assign({sid: nb.sid, unit}, nb.sorting ? {sorting: nb.sorting} : {}, changes);
     const run = async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          const r = await api('/api/note', {method: 'POST', keepalive, body: JSON.stringify(Object.assign({sid, unit}, changes))});
+          const r = await api('/api/note', {method: 'POST', keepalive, body: JSON.stringify(body)});
           pending--;
-          if (!pending && sid === S.sid) {
+          if (!pending && nb.key === curKey()) {
             S.notebook = r.notebook;
             S.mtime = r.mtime;
             notebookChanged();
@@ -1235,13 +1461,13 @@
     if (!dirty) return;
     const d = dirty;
     dirty = null;
-    optimistic(d.sid, d.unit, {note: d.note});
-    save(d.sid, d.unit, {note: d.note}, keepalive);
+    optimistic(d.nb, d.unit, {note: d.note});
+    save(d.nb, d.unit, {note: d.note}, keepalive);
   }
 
   noteBox.addEventListener('input', () => {
     if (S.cur == null) return;
-    dirty = {sid: S.sid, unit: S.cur, note: noteBox.value};
+    dirty = {nb: nbTarget(), unit: S.cur, note: noteBox.value};
     setSave('editing');
     clearTimeout(noteTimer);
     noteTimer = setTimeout(flushNote, 700);
@@ -1254,8 +1480,8 @@
     flushNote();
     const e = entry(S.cur), tags = ((e && e.tags) || []).slice(), k = tags.indexOf(tag);
     if (k >= 0) tags.splice(k, 1); else tags.push(tag);
-    optimistic(S.sid, S.cur, {tags});
-    save(S.sid, S.cur, {tags});
+    optimistic(nbTarget(), S.cur, {tags});
+    save(nbTarget(), S.cur, {tags});
     if (document.body.classList.contains('focus')) toast(`Unit ${S.cur}: ${k >= 0 ? '−' : '+'} ${tag}`, 1200);
   }
 
@@ -1263,8 +1489,8 @@
     if (S.cur == null) return;
     flushNote();
     const e = entry(S.cur), flag = !(e && e.flag);
-    optimistic(S.sid, S.cur, {flag});
-    save(S.sid, S.cur, {flag});
+    optimistic(nbTarget(), S.cur, {flag});
+    save(nbTarget(), S.cur, {flag});
     if (document.body.classList.contains('focus')) toast(`Unit ${S.cur}: ${flag ? '★ flagged' : 'flag removed'}`, 1200);
   }
 
@@ -1276,10 +1502,10 @@
 
   async function poll() {
     if (document.hidden || !S.sid || pending || dirty) return;
-    const sid = S.sid;
+    const nb = nbTarget();
     try {
-      const r = await api('/api/notebook?sid=' + encodeURIComponent(sid));
-      if (sid !== S.sid || pending || dirty) return;
+      const r = await api('/api/notebook?sid=' + encodeURIComponent(nb.sid) + sortingQuery(nb.sorting));
+      if (nb.key !== curKey() || pending || dirty) return;
       const conflictsChanged = (r.conflicts || []).join() !== S.conflicts.join();
       S.conflicts = r.conflicts || [];
       if (conflictsChanged) renderConflicts();
@@ -1307,10 +1533,14 @@
     return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
+  /** Another sorting than the default goes in electro_gui's ?sorting= (and the state); the default's links carry neither. */
   function egLink(u) {
     const state = {session: S.sid, unit: u.id};
+    if (S.sorting) state.sorting = S.sorting;
     if (u.quality && !EG_DEFAULT_Q.includes(u.quality)) state.unitQ = EG_DEFAULT_Q.concat([u.quality]);
     const url = new URL(S.eg.url);
+    if (S.sorting) url.searchParams.set('sorting', S.sorting);
+    else url.searchParams.delete('sorting');
     url.hash = 's=' + egEncode(state);
     return url.toString();
   }
@@ -1399,10 +1629,11 @@
   $('toast').addEventListener('click', () => { $('toast').hidden = true; });
 
   $('session').addEventListener('change', e => { openSession(e.target.value, null, S.view); e.target.blur(); });
+  $('sorting').addEventListener('change', e => { openSession(S.sid, null, S.view, e.target.value || null); e.target.blur(); });
 
   window.addEventListener('hashchange', () => {
     const h = parseHash();
-    if (h.s && h.s !== S.sid && S.sessions.some(s => s.id === h.s)) openSession(h.s, h.u, h.v);
+    if (h.s && (h.s !== S.sid || h.so !== S.sorting) && S.sessions.some(s => s.id === h.s)) openSession(h.s, h.u, h.v, h.so);
     else {
       if (h.v && h.v !== S.view) setView(h.v);
       if (h.u != null && h.u !== S.cur) go(h.u);

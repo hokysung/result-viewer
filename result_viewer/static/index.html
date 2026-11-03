@@ -22,6 +22,7 @@
   <button id="drawerBtn" class="icon phone-only" title="Unit list" aria-label="Unit list">☰</button>
   <span class="brand desk-only">Unit rasters</span>
   <select id="session" aria-label="Session"></select>
+  <select id="sorting" aria-label="Spike sorting" hidden></select>
   <span class="rowbreak"></span>
   <div class="nav">
     <button id="prev" class="icon" title="Previous unit (←)" aria-label="Previous unit">‹</button>
@@ -56,6 +57,7 @@
     <div id="unitStrip" hidden></div>
     <div id="sessionPane" hidden></div>
     <div id="panelPane" hidden></div>
+    <div id="probePane" hidden></div>
     <div id="figure">
       <img id="img" alt="" draggable="false">
       <div id="figMsg" hidden></div>
@@ -95,6 +97,7 @@
       <tr><td><kbd>g</kbd></td><td>go to unit #</td></tr>
       <tr><td><kbd>s</kbd> · <kbd>S</kbd></td><td>sort by unit # → rate → stable trials · reverse the sort</td></tr>
       <tr><td><kbd>]</kbd> <kbd>[</kbd> · <kbd>r</kbd></td><td>next / previous figure · back to raster</td></tr>
+      <tr><td>Probe view</td><td>units along the probe by class · click a unit to inspect · double-click for its raster</td></tr>
       <tr><td><kbd>}</kbd> <kbd>{</kbd></td><td>next / previous session</td></tr>
       <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>toggle tag</td></tr>
       <tr><td><kbd>f</kbd></td><td>flag</td></tr>

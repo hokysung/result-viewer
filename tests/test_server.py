@@ -123,6 +123,25 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.get_json("/api/session?sid=None_20260101")[0], 404)
         self.assertEqual(self.get_json("/api/session?sid=../x")[0], 400)
 
+    def test_probe_profile_and_timeline_lookup(self):
+        status, body = self.get_json(f"/api/probe?sid={SID}")
+        self.assertEqual((status, body["mua"]), (200, None))  # no mua_profile.csv yet
+        tables = Path(self.tmp.name) / "results" / SID / "tables"
+        (tables / "mua_profile.csv").write_text("channel,x_um,y_um,mua_hz,big_hz,noise_uv,n_chunks\n"
+                                                "0,11,0,0.5,0,5.1,24\n1,114,0,22.25,3.5,7.2,24\n2,11,20,bad,0,5,24\n")
+        try:
+            status, body = self.get_json(f"/api/probe?sid={SID}&sorting=")
+            self.assertEqual(status, 200)
+            self.assertEqual(body["mua"], [{"y_um": 0.0, "mua_hz": 0.5, "big_hz": 0.0, "noise_uv": 5.1},
+                                           {"y_um": 0.0, "mua_hz": 22.25, "big_hz": 3.5, "noise_uv": 7.2}])
+        finally:
+            (tables / "mua_profile.csv").unlink()
+        self.assertEqual(self.get_json("/api/probe?sid=None_20260101")[0], 404)
+        self.assertEqual(self.get_json("/api/probe?sid=../x")[0], 400)
+        # the timeline route passes the session id, not the (sid, sorting) pair
+        status, body = self.get_json(f"/api/timeline?sid={SID}")
+        self.assertEqual((status, body["sid"]), (200, SID))
+
     def test_figures(self):
         _, body = self.get_json(f"/api/session?sid={SID}")
         url = body["session"]["units"][0]["figures"]["raster"]["url"]

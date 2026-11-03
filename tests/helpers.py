@@ -55,3 +55,37 @@ def make_session(root, sid=SID, tag=TAG):
     touch(summaries / "unit_0001_sua.jpg")
     touch(summaries / "unit_0002_mua.jpg")
     return s
+
+
+DATA = Path(__file__).with_name("data")
+# small h5py files whose root attribute "meta" names the sortings (made with h5py 'earliest' and 'latest' formats)
+META_SINGLE = DATA / "meta_single_v0.h5"   # streams: imec0 ms5_lar_v8
+META_MIXED = DATA / "meta_mixed_v3.h5"     # streams: imec0 ms5_lar_v8, imec1 ms5_lar_v6
+
+
+def make_sortings(root, sid=SID, tag=TAG):
+    """``make_session`` plus other sortings under ``<sid>/sortings/``:
+
+    * ``ms5_lar_v6``: units 1 and 7 (its unit 1 is another unit than the default's unit 1), a figure kind, META_MIXED;
+    * ``ks4_nwb``: unit 1 only, a ``session.h5`` without meta (labelled by its folder name);
+    * ``broken``: figures but no ``session.h5``, so it is not a sorting.
+    The default's ``session.h5`` gets META_SINGLE (same mtime as before).
+    """
+    s = make_session(root, sid, tag)
+    (s / "session.h5").write_bytes(META_SINGLE.read_bytes())
+    os.utime(s / "session.h5", (1_500_000_000, 1_500_000_000))
+    alt = s / "sortings" / "ms5_lar_v6"
+    touch(alt / "session.h5", META_MIXED.read_bytes(), mtime=1_500_000_000)
+    touch(alt / "figures" / "unit_rasters" / f"unit_0001_mua_{tag}_pmd_rates_raster.png")
+    touch(alt / "figures" / "unit_rasters" / f"unit_0007_sua_{tag}_acc_rates_raster.png")
+    touch(alt / "figures" / "connectivity" / f"unit_0007_sua_{tag}_acc.png")
+    (alt / "tables").mkdir(parents=True, exist_ok=True)
+    (alt / "tables" / "units.csv").write_text(
+        "unit_id,quality,area,peak_channel,depth_um,mean_rate_hz,n_completed_trials,n_stable_trials\n"
+        "1,mua,PMD,300,3000,2.5,300,10\n"
+        "7,sua,ACC,77,770,9.0,300,300\n")
+    other = s / "sortings" / "ks4_nwb"
+    touch(other / "session.h5", b"", mtime=1_500_000_000)
+    touch(other / "figures" / "unit_rasters" / f"unit_0001_sua_{tag}_acc_rates_raster.png")
+    touch(s / "sortings" / "broken" / "figures" / "unit_rasters" / f"unit_0001_sua_{tag}_acc_rates_raster.png")
+    return s

@@ -6,12 +6,15 @@ Four ways, none of which needs a change to electro_gui:
   ``#s=<base64url(UTF-8 JSON state)>`` (``static/core.js`` ``encodeState``) and
   fills every missing key with its defaults, so ``{"session", "unit"}`` opens a
   unit.  Its unit picker lists SUA and MUA only by default (``unitQ``); a link
-  to any other unit widens that list so the unit stays selectable.
+  to any other unit widens that list so the unit stays selectable.  A unit of a
+  session's other sorting (``sortings/<name>/``) adds ``?sorting=<name>`` (and
+  ``"sorting"`` in the state); the default sorting's links carry neither.
 * **Finding it.**  ``from_dashboard`` asks this Mac's apps dashboard which
   electro_gui is up, whatever its port, so the link goes to the one running,
   and where ``tailscale serve`` publishes it, for the link on other devices.
 * **Config files.**  Every noted unit is mirrored to
-  ``<data>/electro_gui/<sid>/electro_gui_configs/unit_NNNN.json`` in electro_gui's
+  ``<data>/electro_gui/<key>/electro_gui_configs/unit_NNNN.json`` (``<key>`` is
+  ``notebook_key``: ``<sid>``, or ``<sid>@<sorting>`` for another sorting) in electro_gui's
   config-file format (``electro_gui/configs.py``).  Launch electro_gui with
   ``--config-dir <data>/electro_gui`` and the notes appear under Views ->
   Config files, one section per session.  Files this module did not write
@@ -31,9 +34,9 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
-from .notebook import unit_heading, utc_now, write_atomic
+from .notebook import notebook_key, unit_heading, utc_now, write_atomic
 
 GENERATOR = "result-viewer"
 NESTED = "electro_gui_configs"
@@ -48,8 +51,10 @@ DASHBOARD_URL = "http://127.0.0.1:8790"
 _RUNS_ELECTRO_GUI = re.compile(r"(?:^|\s)-m\s+electro_gui(?:\s|$)|(?:^|/)electro-gui(?:\s|$)")
 
 
-def view_state(sid, unit_id, quality=None):
+def view_state(sid, unit_id, quality=None, sorting=None):
     state = {"session": sid, "unit": int(unit_id)}
+    if sorting is not None:
+        state["sorting"] = sorting
     if quality and quality not in DEFAULT_QUALITIES:
         state["unitQ"] = list(DEFAULT_QUALITIES) + [quality]
     return state
@@ -61,18 +66,26 @@ def encode_state(state):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def deep_link(base_url, sid, unit_id, quality=None):
-    """``base_url`` may carry electro_gui's ``?token=`` (a --lan server); the state goes in the fragment."""
+def deep_link(base_url, sid, unit_id, quality=None, sorting=None):
+    """``base_url`` may carry electro_gui's ``?token=`` (a --lan server); the state goes in the fragment,
+    another sorting than the default also in ``?sorting=``."""
     parts = urlsplit(base_url)
-    fragment = "s=" + encode_state(view_state(sid, unit_id, quality))
-    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", parts.query, fragment))
+    fragment = "s=" + encode_state(view_state(sid, unit_id, quality, sorting))
+    query = parts.query
+    if sorting is not None:
+        query = "&".join(q for q in (query, "sorting=" + quote(sorting, safe="")) if q)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", query, fragment))
 
 
-def config_path(configs_root, sid, unit_id):
-    return Path(configs_root) / sid / NESTED / f"unit_{int(unit_id):04d}.json"
+def config_folder(configs_root, sid, sorting=None):
+    return Path(configs_root) / notebook_key(sid, sorting) / NESTED
 
 
-def build_config(sid, entry):
+def config_path(configs_root, sid, unit_id, sorting=None):
+    return config_folder(configs_root, sid, sorting) / f"unit_{int(unit_id):04d}.json"
+
+
+def build_config(sid, entry, sorting=None):
     note = (entry.get("note") or "").strip()
     first = note.splitlines()[0] if note else ""
     tags = entry.get("tags") or []
@@ -80,10 +93,10 @@ def build_config(sid, entry):
     return {"electro_gui_config": 1,
             "title": unit_heading(entry) + (" ★" if entry.get("flag") else ""),
             "hint": hint,
-            "group": f"Notes · {sid}",
+            "group": f"Notes · {sid}" + (f" · {sorting}" if sorting is not None else ""),
             "slide": int(entry["unit_id"]),
             "note": note,
-            "state": view_state(sid, entry["unit_id"], entry.get("quality")),
+            "state": view_state(sid, entry["unit_id"], entry.get("quality"), sorting),
             "generator": GENERATOR,
             "tags": tags,
             "flag": bool(entry.get("flag"))}
@@ -97,9 +110,9 @@ def _ours(path):
         return False
 
 
-def sync_unit(configs_root, sid, unit_id, entry):
+def sync_unit(configs_root, sid, unit_id, entry, sorting=None):
     """Write (or, when ``entry`` is None, remove) this unit's config file."""
-    path = config_path(configs_root, sid, unit_id)
+    path = config_path(configs_root, sid, unit_id, sorting)
     if entry is None:
         if path.exists() and _ours(path):
             path.unlink()
@@ -107,18 +120,18 @@ def sync_unit(configs_root, sid, unit_id, entry):
     if path.exists() and not _ours(path):
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(path, json.dumps(build_config(sid, entry), indent=1, ensure_ascii=False) + "\n")
+    write_atomic(path, json.dumps(build_config(sid, entry, sorting), indent=1, ensure_ascii=False) + "\n")
     return path
 
 
-def sync_session(configs_root, sid, notebook):
+def sync_session(configs_root, sid, notebook, sorting=None):
     """Mirror a whole notebook: write every entry, remove our files for units no longer noted."""
     keep = set()
     for entry in notebook.get("units", {}).values():
-        written = sync_unit(configs_root, sid, entry["unit_id"], entry)
+        written = sync_unit(configs_root, sid, entry["unit_id"], entry, sorting)
         if written:
             keep.add(written.name)
-    folder = Path(configs_root) / sid / NESTED
+    folder = config_folder(configs_root, sid, sorting)
     if folder.is_dir():
         for path in folder.glob("unit_*.json"):
             if path.name not in keep and _ours(path):
