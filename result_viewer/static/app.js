@@ -72,7 +72,8 @@
   };
 
   const S = {
-    config: null, sessions: [], sid: null, session: null, units: [], byId: new Map(),
+    // sorting: the open sorting's folder name under <sid>/sortings/, null for the session's default sorting
+    config: null, sessions: [], sid: null, sorting: null, sortings: [], session: null, units: [], byId: new Map(),
     notebook: {units: {}}, mtime: null, conflicts: [], files: {},
     filtered: [], cur: null, view: store.get('view', 'raster'), zoom: false,
     filters: Object.assign(noFilters(), store.get('filters', {})),
@@ -89,6 +90,12 @@
   const upper = s => (s ? String(s).toUpperCase() : '');
   const viewLabel = kind => { const v = S.session && S.session.views.find(x => x.kind === kind); return v ? v.label : kind; };
   const qRank = q => { const i = Q_ORDER.indexOf(q); return i < 0 ? Q_ORDER.length : i; };
+  /* A notebook is one sorting of one session: "<sid>" (default sorting) or "<sid>@<sorting>", as on the server.
+   * Unit ids of two sortings are unrelated, so everything per unit (notes, last unit) is keyed by this. */
+  const nbKey = (sid, sorting) => (sorting ? `${sid}@${sorting}` : sid);
+  const curKey = () => nbKey(S.sid, S.sorting);
+  const nbTarget = () => ({sid: S.sid, sorting: S.sorting, key: curKey()});
+  const sortingQuery = sorting => (sorting ? '&sorting=' + encodeURIComponent(sorting) : '');
   const prettySid = sid => { const m = /^sub-([^_]+)_ses-(\d{4})_(\d\d)_(\d\d)/.exec(sid); return m ? `${m[1]} ${m[2]}-${m[3]}-${m[4]}` : sid; };
 
   async function api(path, opts = {}) {
@@ -148,7 +155,7 @@
     const h = parseHash();
     const known = sid => sid && sessions.some(s => s.id === sid);
     const sid = known(h.s) ? h.s : known(store.get('session')) ? store.get('session') : sessions[sessions.length - 1].id;
-    await openSession(sid, h.u, h.v);
+    await openSession(sid, h.u, h.v, sid === h.s ? h.so : null);
     egLoop(true);
     setInterval(poll, 15000);
   }
@@ -156,27 +163,38 @@
   function parseHash() {
     const p = new URLSearchParams(location.hash.slice(1));
     const u = p.get('u');
-    return {s: p.get('s'), u: u != null && u !== '' && Number.isFinite(Number(u)) ? Number(u) : null, v: p.get('v')};
+    // sorting: absent = the session's default sorting
+    return {s: p.get('s'), so: p.get('sorting') || null,
+            u: u != null && u !== '' && Number.isFinite(Number(u)) ? Number(u) : null, v: p.get('v')};
   }
 
   function writeHash() {
     if (!S.sid) return;
-    const p = new URLSearchParams({s: S.sid, u: S.cur == null ? '' : S.cur, v: S.view});
+    const p = new URLSearchParams({s: S.sid});
+    if (S.sorting) p.set('sorting', S.sorting);
+    p.set('u', S.cur == null ? '' : S.cur);
+    p.set('v', S.view);
     history.replaceState(null, '', '#' + p.toString());
   }
 
-  async function openSession(sid, unitId = null, view = null) {
+  async function openSession(sid, unitId = null, view = null, sorting = null) {
     flushNote();
-    $('title').textContent = `Loading ${prettySid(sid)}…`;
+    $('title').textContent = `Loading ${prettySid(sid)}${sorting ? ` · ${sorting}` : ''}…`;
     let data;
     try {
-      data = await api('/api/session?sid=' + encodeURIComponent(sid));
+      data = await api('/api/session?sid=' + encodeURIComponent(sid) + sortingQuery(sorting));
     } catch (e) {
+      if (sorting && e.status === 404) {  // a link to a sorting this session no longer has: open its default
+        toast(`${sid} has no sorting ${sorting}; showing its default sorting`, 5000);
+        return openSession(sid, null, view, null);
+      }
       toast(`Cannot open ${sid}: ${e.message}`, 5000);
-      if (S.sid) $('session').value = S.sid;
+      if (S.sid) { $('session').value = S.sid; $('sorting').value = S.sorting || ''; }
       return;
     }
     S.sid = sid;
+    S.sorting = sorting;
+    S.sortings = data.sortings || [];
     S.session = data.session;
     S.units = data.session.units;
     S.byId = new Map(S.units.map(u => [u.id, u]));
@@ -186,10 +204,11 @@
     S.files = data.files || {};
     store.set('session', sid);
     $('session').value = sid;
+    renderSortingSelect();
     if (view) S.view = view;
     if (!S.session.views.some(v => v.kind === S.view)) S.view = 'raster';
     computeFiltered();
-    let target = unitId != null && S.byId.has(unitId) ? unitId : store.get('last.' + sid, null);
+    let target = unitId != null && S.byId.has(unitId) ? unitId : store.get('last.' + curKey(), null);
     if (target == null || !S.byId.has(target)) target = S.filtered.length ? S.filtered[0] : (S.units.length ? S.units[0].id : null);
     S.cur = null;
     renderFilters();
@@ -468,13 +487,30 @@
       : `<li class="empty small">No notes in this session yet. Write in the box, press 1–${S.config.tags.length} to tag, f to flag.</li>`);
     const opt = $('session').querySelector(`option[value="${CSS.escape(S.sid)}"]`);
     const info = S.sessions.find(s => s.id === S.sid);
-    if (opt && info) { info.noted = ids.length; opt.textContent = sessionLabel(info); }
+    if (opt && info && !S.sorting) { info.noted = ids.length; opt.textContent = sessionLabel(info); }
+    const so = S.sortings.find(s => (s.name || null) === S.sorting);
+    if (so) { so.noted = ids.length; renderSortingSelect(); }
   }
 
+  // the session list's counts are the default sorting's
   function sessionLabel(s) { return `${prettySid(s.id)} · ${s.n_units} units${s.noted ? ` · ${s.noted} noted` : ''}`; }
 
   function renderSessionSelect() {
     $('session').innerHTML = S.sessions.map(s => `<option value="${esc(s.id)}">${esc(sessionLabel(s))}</option>`).join('');
+  }
+
+  function sortingLabel(s) {
+    return `${s.label}${s.n_units != null ? ` · ${s.n_units} units` : ''}${s.noted ? ` · ${s.noted} noted` : ''}`;
+  }
+
+  /** The sorting picker: shown only when the open session has more than one sorting. */
+  function renderSortingSelect() {
+    const sel = $('sorting');
+    sel.hidden = S.sortings.length < 2;
+    sel.innerHTML = S.sortings.map(s => `<option value="${esc(s.name || '')}">${esc(sortingLabel(s))}</option>`).join('');
+    sel.value = S.sorting || '';
+    const cur = S.sortings.find(s => (s.name || null) === S.sorting);
+    sel.title = `Spike sorting of this session${cur ? `: ${cur.label}` : ''}. Unit ids differ between sortings; each has its own notes.`;
   }
 
   function renderConflicts() {
@@ -518,7 +554,7 @@
     if (S.cur !== id) flushNote();
     const changed = S.cur !== id;
     S.cur = id;
-    store.set('last.' + S.sid, id);
+    store.set('last.' + curKey(), id);
     writeHash();
     renderUnit(changed);
   }
@@ -553,7 +589,7 @@
     if (u.peak_channel != null) bits.push(`ch ${u.peak_channel}`);
     if (u.depth_um != null) bits.push(`${u.depth_um} µm`);
     $('title').textContent = bits.filter(Boolean).join(' · ');
-    document.title = `Unit ${u.id} · ${prettySid(S.sid)}`;
+    document.title = `Unit ${u.id} · ${prettySid(S.sid)}${S.sorting ? ` · ${S.sorting}` : ''}`;
     renderBadges();
     renderViews();
     showFigure();
@@ -759,7 +795,8 @@
   // ----------------------------------------------------------------- notes
   let dirty = null, noteTimer = null, pending = 0, chain = Promise.resolve();
   const noteBox = $('note');
-  const editingHere = () => document.activeElement === noteBox || (dirty && dirty.sid === S.sid && dirty.unit === S.cur);
+  // dirty.nb, and save()'s / optimistic()'s first argument: nbTarget() of the notebook the edit belongs to
+  const editingHere = () => document.activeElement === noteBox || (dirty && dirty.nb.key === curKey() && dirty.unit === S.cur);
 
   function renderNoteEditor(force) {
     if (!force && editingHere()) return;
@@ -790,8 +827,8 @@
   }
 
   /** Apply changes to the local copy right away; the server's answer replaces it once nothing is queued. */
-  function optimistic(sid, unit, changes) {
-    if (sid !== S.sid) return;
+  function optimistic(nb, unit, changes) {
+    if (nb.key !== curKey()) return;
     const key = String(unit);
     const next = Object.assign({unit_id: unit, note: '', tags: [], flag: false}, S.notebook.units[key] || {}, changes);
     if (!(next.note || '').trim() && !(next.tags || []).length && !next.flag) delete S.notebook.units[key];
@@ -807,15 +844,16 @@
     renderPos();
   }
 
-  function save(sid, unit, changes, keepalive = false) {
+  function save(nb, unit, changes, keepalive = false) {
     pending++;
     setSave('saving');
+    const body = Object.assign({sid: nb.sid, unit}, nb.sorting ? {sorting: nb.sorting} : {}, changes);
     const run = async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          const r = await api('/api/note', {method: 'POST', keepalive, body: JSON.stringify(Object.assign({sid, unit}, changes))});
+          const r = await api('/api/note', {method: 'POST', keepalive, body: JSON.stringify(body)});
           pending--;
-          if (!pending && sid === S.sid) {
+          if (!pending && nb.key === curKey()) {
             S.notebook = r.notebook;
             S.mtime = r.mtime;
             notebookChanged();
@@ -839,13 +877,13 @@
     if (!dirty) return;
     const d = dirty;
     dirty = null;
-    optimistic(d.sid, d.unit, {note: d.note});
-    save(d.sid, d.unit, {note: d.note}, keepalive);
+    optimistic(d.nb, d.unit, {note: d.note});
+    save(d.nb, d.unit, {note: d.note}, keepalive);
   }
 
   noteBox.addEventListener('input', () => {
     if (S.cur == null) return;
-    dirty = {sid: S.sid, unit: S.cur, note: noteBox.value};
+    dirty = {nb: nbTarget(), unit: S.cur, note: noteBox.value};
     setSave('editing');
     clearTimeout(noteTimer);
     noteTimer = setTimeout(flushNote, 700);
@@ -858,8 +896,8 @@
     flushNote();
     const e = entry(S.cur), tags = ((e && e.tags) || []).slice(), k = tags.indexOf(tag);
     if (k >= 0) tags.splice(k, 1); else tags.push(tag);
-    optimistic(S.sid, S.cur, {tags});
-    save(S.sid, S.cur, {tags});
+    optimistic(nbTarget(), S.cur, {tags});
+    save(nbTarget(), S.cur, {tags});
     if (document.body.classList.contains('focus')) toast(`Unit ${S.cur}: ${k >= 0 ? '−' : '+'} ${tag}`, 1200);
   }
 
@@ -867,8 +905,8 @@
     if (S.cur == null) return;
     flushNote();
     const e = entry(S.cur), flag = !(e && e.flag);
-    optimistic(S.sid, S.cur, {flag});
-    save(S.sid, S.cur, {flag});
+    optimistic(nbTarget(), S.cur, {flag});
+    save(nbTarget(), S.cur, {flag});
     if (document.body.classList.contains('focus')) toast(`Unit ${S.cur}: ${flag ? '★ flagged' : 'flag removed'}`, 1200);
   }
 
@@ -880,10 +918,10 @@
 
   async function poll() {
     if (document.hidden || !S.sid || pending || dirty) return;
-    const sid = S.sid;
+    const nb = nbTarget();
     try {
-      const r = await api('/api/notebook?sid=' + encodeURIComponent(sid));
-      if (sid !== S.sid || pending || dirty) return;
+      const r = await api('/api/notebook?sid=' + encodeURIComponent(nb.sid) + sortingQuery(nb.sorting));
+      if (nb.key !== curKey() || pending || dirty) return;
       const conflictsChanged = (r.conflicts || []).join() !== S.conflicts.join();
       S.conflicts = r.conflicts || [];
       if (conflictsChanged) renderConflicts();
@@ -911,10 +949,14 @@
     return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
+  /** Another sorting than the default goes in electro_gui's ?sorting= (and the state); the default's links carry neither. */
   function egLink(u) {
     const state = {session: S.sid, unit: u.id};
+    if (S.sorting) state.sorting = S.sorting;
     if (u.quality && !EG_DEFAULT_Q.includes(u.quality)) state.unitQ = EG_DEFAULT_Q.concat([u.quality]);
     const url = new URL(S.eg.url);
+    if (S.sorting) url.searchParams.set('sorting', S.sorting);
+    else url.searchParams.delete('sorting');
     url.hash = 's=' + egEncode(state);
     return url.toString();
   }
@@ -1003,10 +1045,11 @@
   $('toast').addEventListener('click', () => { $('toast').hidden = true; });
 
   $('session').addEventListener('change', e => { openSession(e.target.value, null, S.view); e.target.blur(); });
+  $('sorting').addEventListener('change', e => { openSession(S.sid, null, S.view, e.target.value || null); e.target.blur(); });
 
   window.addEventListener('hashchange', () => {
     const h = parseHash();
-    if (h.s && h.s !== S.sid && S.sessions.some(s => s.id === h.s)) openSession(h.s, h.u, h.v);
+    if (h.s && (h.s !== S.sid || h.so !== S.sorting) && S.sessions.some(s => s.id === h.s)) openSession(h.s, h.u, h.v, h.so);
     else {
       if (h.v && h.v !== S.view) setView(h.v);
       if (h.u != null && h.u !== S.cur) go(h.u);
