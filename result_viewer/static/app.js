@@ -1180,6 +1180,7 @@
         `${m.group ? ` <span class="muted small">${esc(m.group)}</span>` : ''}${m.desc ? `<small class="muted">${esc(m.desc)}</small>` : ''}</figcaption>` +
         `<img src="${esc(p.url)}" alt="${esc(m.title)} · unit ${esc(S.cur)}" loading="${big ? 'eager' : 'lazy'}" decoding="async"></figure>`;
     };
+    pane.classList.toggle('single', !!single);
     pane.innerHTML = bar + (single
       ? card(all.find(p => p.key === single), true)
       : `<div class="pgrid" style="--cols:${isPhone() ? 1 : S.panelCols}">${shown.map(p => card(p, false)).join('')}</div>`);
