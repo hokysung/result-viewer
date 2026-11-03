@@ -40,11 +40,11 @@ def make_session(root, sid=SID, tag=TAG):
     # the current units: 3 is MUA now (its newest raster says SUA), 4 is not in this build, 5 has no raster
     (tables / "units.csv").write_text(
         "unit_id,quality,area,peak_channel,depth_um,stream,source_unit_id,n_spikes,mean_rate_hz,"
-        "n_completed_trials,n_stable_trials\n"
-        "1,sua,ACC,22.0,220.0,imec0,1,9000,5.5123,300,300\n"
-        "2,noise,PMD,140,1400.5,imec0,2,4000,1.2,300,150\n"
-        "3,mua,ACC,,,imec0,3,800,0.4,300,0\n"
-        "5,mua,ACC,,,imec0,5,100,0.1,300,300\n")
+        "n_completed_trials,n_stable_trials,conn_basis,conn_pulse_p\n"
+        "1,sua,ACC,22.0,220.0,imec0,1,9000,5.5123,300,300,stable,0.0002\n"
+        "2,noise,PMD,140,1400.5,imec0,2,4000,1.2,300,150,all,nan\n"
+        "3,mua,ACC,,,imec0,3,800,0.4,300,0,all,inf\n"
+        "5,mua,ACC,,,imec0,5,100,0.1,300,300,all,\n")
     figs = s / "figures"
     touch(figs / "selectivity_classes" / f"unit_0001_sua_{tag}_acc.png")
     touch(figs / "selectivity_classes" / f"unit_0002_mua_{tag}_pmd.png")

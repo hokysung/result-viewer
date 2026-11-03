@@ -32,8 +32,10 @@ A session folder is
   session.h5                                   the exported session (electro_gui reads it)
   figures/unit_rasters/unit_NNNN_<quality>_<Subject>_<YYYYMMDD>_<area>_rates_raster.png
   figures/<kind>/unit_NNNN_...png              any other per-unit figure, shown as an extra tab
+  figures/connectivity/unit_NNNN_...png        pulse-locked rasters, a session with connectivity mapping
   tables/units.csv                             unit_id, quality, area, peak_channel, depth_um,
-                                               mean_rate_hz, n_stable_trials, n_completed_trials
+                                               mean_rate_hz, n_stable_trials, n_completed_trials,
+                                               QC metrics and conn_* statistics (all used by QC)
 ```
 
 A unit is a unit id of `session.h5`, defined by its raster. Its current label, rate, stable trials,
@@ -63,7 +65,16 @@ from the JSON (after renaming tags, say).
 
 The left column lists the units with their tags (dots), note (✎) and flag (★); the chips above it
 filter by quality, full-session stability, area, flag, noted and tag, and the arrows step through
-the matches only. **Sort** orders them by unit #, firing rate or stable trials. Tags live in
+the matches only. **Sort** orders them by unit #, firing rate or stable trials, and by pulse-locked
+or train p in a session with connectivity mapping.
+
+**QC** (below the chips) keeps only units that pass *every* criterion: a threshold (≥ or ≤) on any
+numeric column of `tables/units.csv` — rate, stable trials or fraction, SNR, ISI violations,
+presence ratio, amplitude, and the `conn_*` connectivity statistics. Each row shows how many units
+it removes on its own; presets give Watters et al. 2026 inclusion (≥ 1 Hz, ≥ 300 stable trials),
+pulse-locked (p ≤ 0.001) and train-modulated (p ≤ 0.001); **copy ids** copies the passing unit ids.
+A unit without a value fails; a criterion on a column the session lacks is greyed and skipped.
+Criteria are kept in the browser between sessions. Tags live in
 `settings.json` (`"tags": [...]`, at most nine, keys 1–9); reload the page after editing.
 
 ## electro_gui

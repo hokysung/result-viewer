@@ -13,6 +13,40 @@
 
   function noFilters() { return {q: [], area: [], tags: [], flagged: false, noted: false, fullStable: false}; }
 
+  /* QC criteria: thresholds on tables/units.csv columns (u.metrics), all of which a unit must pass.
+   * `op` 'min' keeps units with value >= v, 'max' value <= v. A criterion on a metric this session
+   * does not have (e.g. conn_* without connectivity mapping) is shown greyed and not applied;
+   * a unit without a value fails it. Known metrics get a label and a sensible default. */
+  const METRICS = {
+    mean_rate_hz: {label: 'Rate (Hz)', op: 'min', v: 1, tip: 'session mean firing rate'},
+    n_stable_trials: {label: 'Stable trials', op: 'min', v: 300, tip: 'completed trials inside the unit\'s stable interval'},
+    frac_stable_trials: {label: 'Stable fraction', op: 'min', v: 0.8, tip: 'stable / completed trials'},
+    presence_ratio: {label: 'Presence ratio', op: 'min', v: 0.9},
+    snr: {label: 'SNR', op: 'min', v: 3},
+    isi_violations_ratio: {label: 'ISI violations', op: 'max', v: 0.1},
+    amplitude_median: {label: 'Amplitude (µV)', op: 'min', v: 50},
+    n_spikes: {label: 'Spikes', op: 'min', v: 1000},
+    depth_um: {label: 'Depth (µm)', op: 'min', v: 0},
+    conn_pulse_p: {label: 'Pulse-locked p', op: 'max', v: 0.001, tip: 'one-sided Poisson p: spikes 0.5–6 ms after the pulse TTL vs −20…−3 ms before'},
+    conn_pulse_ratio: {label: 'Pulse ratio', op: 'min', v: 2, tip: 'rate 0.5–6 ms after the pulse / rate −20…−3 ms before'},
+    conn_spikes_per_pulse: {label: 'Excess spikes/pulse', op: 'min', v: 0.01},
+    conn_latency_ms: {label: 'Pulse latency (ms)', op: 'max', v: 6, tip: 'peak of the excess histogram, only where pulse p < 0.01'},
+    conn_train_p: {label: 'Train p', op: 'max', v: 0.001, tip: 'two-sided Poisson p: rate during the 1 s train vs the second before'},
+    conn_train_ratio: {label: 'Train ratio', op: 'min', v: 1.5, tip: 'rate during the train / the second before (below 1: suppressed)'},
+  };
+  const QC_PRESETS = [
+    {label: 'Watters', tip: 'Watters et al. 2026 inclusion: mean rate ≥ 1 Hz and ≥ 300 stable completed trials',
+     crit: [{key: 'mean_rate_hz', op: 'min', v: 1}, {key: 'n_stable_trials', op: 'min', v: 300}]},
+    {label: 'Pulse-locked', tip: 'Connectivity: excess spikes 0.5–6 ms after the pulse, p ≤ 0.001',
+     crit: [{key: 'conn_pulse_p', op: 'max', v: 0.001}]},
+    {label: 'Train-modulated', tip: 'Connectivity: rate changes over the 1 s train, p ≤ 0.001',
+     crit: [{key: 'conn_train_p', op: 'max', v: 0.001}]},
+  ];
+  const metricLabel = k => (METRICS[k] ? METRICS[k].label : k.replace(/_/g, ' '));
+  const fmtNum = v => (v == null ? '–' : v === 0 ? '0' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? String(+v.toFixed(2))
+    : Math.abs(v) < 0.001 ? v.toExponential(0) : String(+v.toPrecision(2)));
+  function metric(u, key) { const m = u && u.metrics; return m && m[key] != null ? m[key] : null; }
+
   /* Sort keys: `desc` is the natural direction (highest rate first); S.sort.dir = -1 reverses it.
    * Units without a value (no stability table, or not in the current units) always sort last. */
   const fmtRate = v => (v == null ? '–' : v >= 10 ? v.toFixed(0) : v.toFixed(1));
@@ -22,6 +56,12 @@
            cell: u => (u.rate_hz == null ? '' : `${fmtRate(u.rate_hz)}<small> Hz</small>`), tip: 'session mean firing rate'},
     stable: {label: 'Stable trials', value: u => u.n_stable, desc: true,
              cell: u => (u.n_stable == null ? '' : `${u.n_stable}<small>/${u.n_trials}</small>`), tip: 'trials in the stable block'},
+    pulse: {label: 'Pulse p', value: u => metric(u, 'conn_pulse_p'), desc: false, needs: 'conn_pulse_p',
+            cell: u => (metric(u, 'conn_pulse_p') == null ? '' : `<small>p </small>${fmtNum(metric(u, 'conn_pulse_p'))}`),
+            tip: 'connectivity: pulse-locked p, smallest first'},
+    train: {label: 'Train p', value: u => metric(u, 'conn_train_p'), desc: false, needs: 'conn_train_p',
+            cell: u => (metric(u, 'conn_train_p') == null ? '' : `<small>p </small>${fmtNum(metric(u, 'conn_train_p'))}`),
+            tip: 'connectivity: train-modulation p, smallest first'},
   };
 
   const store = {
@@ -36,6 +76,7 @@
     notebook: {units: {}}, mtime: null, conflicts: [], files: {},
     filtered: [], cur: null, view: store.get('view', 'raster'), zoom: false,
     filters: Object.assign(noFilters(), store.get('filters', {})),
+    qc: (store.get('qc', []) || []).filter(c => c && typeof c.key === 'string' && isFinite(c.v)),
     sort: Object.assign({key: 'id', dir: 1}, store.get('sort', {})), sorted: [],
     eg: {url: '', running: false},
   };
@@ -152,6 +193,7 @@
     if (target == null || !S.byId.has(target)) target = S.filtered.length ? S.filtered[0] : (S.units.length ? S.units[0].id : null);
     S.cur = null;
     renderFilters();
+    renderQc();
     renderSort();
     renderList();
     renderNoted();
@@ -170,11 +212,97 @@
     if (f.noted && !e) return false;
     if (f.tags.length && !(e && (e.tags || []).some(t => f.tags.includes(t)))) return false;
     if (f.fullStable && !u.full_stable) return false;
-    return true;
+    return passesQc(u);
   }
 
+  // -------------------------------------------------------------------- QC
+  /** Metric keys some unit of this session has, in METRICS order, then the rest alphabetically. */
+  function sessionMetrics() {
+    const have = new Set();
+    for (const u of S.units) for (const k in (u.metrics || {})) have.add(k);
+    const known = Object.keys(METRICS).filter(k => have.has(k));
+    return known.concat(Array.from(have).filter(k => !METRICS[k]).sort());
+  }
+  /** The criteria that apply here: switched on, and on a metric this session has. */
+  function activeQc() { const have = new Set(sessionMetrics()); return S.qc.filter(c => c.on !== false && have.has(c.key)); }
+  function passes(u, c) { const v = metric(u, c.key); return v != null && (c.op === 'max' ? v <= c.v : v >= c.v); }
+  function passesQc(u) { return activeQc().every(c => passes(u, c)); }
+
+  function renderQc() {
+    const have = sessionMetrics();
+    const box = $('qc');
+    if (!have.length) { box.innerHTML = ''; box.hidden = true; return; }
+    box.hidden = false;
+    const active = activeQc();
+    const nPass = S.units.filter(u => active.every(c => passes(u, c))).length;
+    const rows = S.qc.map((c, i) => {
+      const missing = !have.includes(c.key);
+      const fails = missing ? null : S.units.filter(u => !passes(u, c)).length;
+      const tip = (METRICS[c.key] && METRICS[c.key].tip) || c.key;
+      return `<div class="qcrow${missing ? ' missing' : ''}${c.on === false ? ' off' : ''}" data-i="${i}">` +
+        `<input type="checkbox" data-qc="on" ${c.on === false ? '' : 'checked'} aria-label="Apply this criterion"${missing ? ' disabled' : ''}>` +
+        `<span class="qlbl" title="${esc(tip)}">${esc(metricLabel(c.key))}</span>` +
+        `<button type="button" class="qop" data-qc="op" title="Switch ≥ / ≤">${c.op === 'max' ? '≤' : '≥'}</button>` +
+        `<input type="number" step="any" data-qc="v" value="${esc(c.v)}" aria-label="Threshold">` +
+        `<span class="qn" title="${missing ? 'This session has no such column' : `${fails} of ${S.units.length} units fail this criterion on its own`}">` +
+        `${missing ? 'n/a' : `−${fails}`}</span>` +
+        `<button type="button" class="qx" data-qc="rm" aria-label="Remove criterion">✕</button></div>`;
+    }).join('');
+    const options = have.map(k => `<option value="${esc(k)}">${esc(metricLabel(k))}</option>`).join('');
+    box.innerHTML =
+      `<div class="qchead"><b>QC</b><span class="muted small">${S.qc.length ? `${nPass} of ${S.units.length} pass all` : 'units must pass every criterion'}</span>` +
+      (S.qc.length ? '<button type="button" class="chip clear" data-qc="clear">clear</button>' : '') + '</div>' + rows +
+      `<div class="qcadd"><select data-qc="add" aria-label="Add a QC criterion"><option value="">+ criterion…</option>${options}</select>` +
+      QC_PRESETS.filter(p => p.crit.some(c => have.includes(c.key)))
+        .map((p, i) => `<button type="button" class="chip" data-qc="preset" data-p="${QC_PRESETS.indexOf(p)}" title="${esc(p.tip)}">${esc(p.label)}</button>`).join('') +
+      (active.length ? '<button type="button" class="chip" data-qc="copy" title="Copy the ids of the units that pass every QC criterion and filter">copy ids</button>' : '') +
+      '</div>';
+  }
+
+  function qcChanged() {
+    store.set('qc', S.qc);
+    filtersChanged();
+  }
+
+  function addQc(key) {
+    const d = METRICS[key] || {op: 'min', v: 0};
+    const i = S.qc.findIndex(c => c.key === key);
+    if (i >= 0) S.qc[i].on = true; else S.qc.push({key, op: d.op, v: d.v, on: true});
+  }
+
+  $('qc').addEventListener('click', e => {
+    const el = e.target.closest('[data-qc]');
+    if (!el) return;
+    const row = el.closest('.qcrow'), i = row ? Number(row.dataset.i) : -1;
+    const what = el.dataset.qc;
+    if (what === 'op') S.qc[i].op = S.qc[i].op === 'max' ? 'min' : 'max';
+    else if (what === 'rm') S.qc.splice(i, 1);
+    else if (what === 'clear') S.qc = [];
+    else if (what === 'preset') {
+      for (const c of QC_PRESETS[Number(el.dataset.p)].crit) {
+        const j = S.qc.findIndex(x => x.key === c.key);
+        if (j >= 0) S.qc[j] = Object.assign({}, c, {on: true}); else S.qc.push(Object.assign({}, c, {on: true}));
+      }
+    } else if (what === 'copy') {
+      const ids = S.filtered.join(' ');
+      (navigator.clipboard ? navigator.clipboard.writeText(ids) : Promise.reject()).then(
+        () => toast(`Copied ${S.filtered.length} unit ids`), () => window.prompt('Unit ids', ids));
+      return;
+    } else return;
+    qcChanged();
+  });
+  $('qc').addEventListener('change', e => {
+    const el = e.target.closest('[data-qc]');
+    if (!el) return;
+    if (el.dataset.qc === 'add') { if (el.value) addQc(el.value); qcChanged(); return; }
+    const i = Number(el.closest('.qcrow').dataset.i);
+    if (el.dataset.qc === 'on') S.qc[i].on = el.checked;
+    if (el.dataset.qc === 'v') { const v = parseFloat(el.value); if (!isFinite(v)) { renderQc(); return; } S.qc[i].v = v; }
+    qcChanged();
+  });
+
   function sortUnits() {
-    const s = SORTS[S.sort.key] || SORTS.id;
+    const s = sortAvailable(S.sort.key) ? SORTS[S.sort.key] : SORTS.id;
     const sign = (s.desc ? -1 : 1) * (S.sort.dir < 0 ? -1 : 1);
     S.sorted = S.units.slice().sort((a, b) => {
       const va = s.value(a), vb = s.value(b);
@@ -222,6 +350,7 @@
     store.set('filters', S.filters);
     computeFiltered();
     renderFilters();
+    renderQc();
     renderList();
     if (S.filtered.length && !S.filtered.includes(S.cur)) {
       const next = nearestFiltered(1);
@@ -232,19 +361,27 @@
     }
   }
 
+  /** Unit id always; the p-value sorts only where some unit has that column; the rest need the stability table. */
+  function sortAvailable(key) {
+    const s = SORTS[key];
+    if (!s) return false;
+    if (key === 'id') return true;
+    return s.needs ? S.units.some(u => metric(u, s.needs) != null) : hasStability();
+  }
+
   function renderSort() {
     const enabled = hasStability();
-    $('sortBar').innerHTML = '<span class="lbl">Sort</span><span class="seg">' + Object.entries(SORTS).map(([key, s]) => {
+    $('sortBar').innerHTML = '<span class="lbl">Sort</span><span class="seg">' + Object.entries(SORTS).filter(([key, s]) => !s.needs || sortAvailable(key)).map(([key, s]) => {
       const on = S.sort.key === key;
       const descending = s.desc !== (S.sort.dir < 0);
-      const tip = key === 'id' ? 'Unit id (s cycles the sort, S reverses it)' : `${s.tip}${enabled ? '' : ' (no stability table in this session)'}`;
-      return `<button type="button" data-sort="${key}" aria-pressed="${on}"${key !== 'id' && !enabled ? ' disabled' : ''} title="${esc(tip)}">` +
+      const tip = key === 'id' ? 'Unit id (s cycles the sort, S reverses it)' : `${s.tip}${sortAvailable(key) ? '' : ' (no stability table in this session)'}`;
+      return `<button type="button" data-sort="${key}" aria-pressed="${on}"${!sortAvailable(key) ? ' disabled' : ''} title="${esc(tip)}">` +
         `${esc(s.label)}${on ? `<span class="dir">${descending ? '▼' : '▲'}</span>` : ''}</button>`;
     }).join('') + '</span>';
   }
 
   function setSort(key, dir) {
-    if (!SORTS[key] || (key !== 'id' && !hasStability())) return;
+    if (!sortAvailable(key)) return;
     S.sort = {key, dir: dir === -1 ? -1 : 1};
     store.set('sort', S.sort);
     computeFiltered();
@@ -256,7 +393,7 @@
   }
 
   function cycleSort() {
-    const keys = Object.keys(SORTS).filter(k => k === 'id' || hasStability());
+    const keys = Object.keys(SORTS).filter(sortAvailable);
     setSort(keys[(keys.indexOf(S.sort.key) + 1) % keys.length], 1);
   }
 
@@ -434,6 +571,13 @@
     if (u.n_trials != null) {
       html += `<span class="badge${u.full_stable ? ' ok' : ''}" title="stability_per_unit.csv: session mean rate; trials in the stable block of ${u.n_trials} completed">` +
         `${fmtRate(u.rate_hz)} Hz · ${u.full_stable ? `stable on all ${u.n_trials} trials` : `stable ${u.n_stable}/${u.n_trials} trials`}</span>`;
+    }
+    const pp = metric(u, 'conn_pulse_p'), tp = metric(u, 'conn_train_p');
+    if (pp != null || tp != null) {
+      const tr = metric(u, 'conn_train_ratio'), lat = metric(u, 'conn_latency_ms');
+      const hit = (pp != null && pp <= 0.001) || (tp != null && tp <= 0.001);
+      html += `<span class="badge${hit ? ' ok' : ''}" title="Connectivity mapping (tables/units.csv conn_*): pulse-locked p (0.5–6 ms after the TTL vs −20…−3 ms), train p and ratio (1 s train vs the second before)">` +
+        `pulse p ${fmtNum(pp)}${lat != null ? ` @ ${fmtNum(lat)} ms` : ''} · train ×${fmtNum(tr)} p ${fmtNum(tp)}</span>`;
     }
     if (u.relabelled_from && u.relabelled_from.length) html += `<span class="badge" title="Older rasters with other labels exist">relabelled · was ${esc(u.relabelled_from.map(upper).join(', '))}</span>`;
     if (fig && fig.label_in_figure) html += `<span class="badge warn" title="${esc(fig.name)}">this figure predates the relabel (labelled ${esc(upper(fig.label_in_figure))})</span>`;

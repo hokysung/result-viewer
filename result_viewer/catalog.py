@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import re
 import threading
@@ -150,7 +151,27 @@ def _stability(session_dir):
             out[uid] = {"quality": (row.get("quality") or "").strip().lower() or None,
                         "rate_hz": round(rate, 3) if isinstance(rate, float) else rate,
                         "n_stable": n_stable, "n_trials": n_trials,
-                        "full_stable": bool(n_trials) and n_stable == n_trials}
+                        "full_stable": bool(n_trials) and n_stable == n_trials,
+                        "metrics": _metrics(row)}
+    return out
+
+
+# units.csv columns that identify a unit rather than measure it: never offered as QC criteria.
+NOT_METRICS = {"unit_id", "source_unit_id", "n_completed_trials", "peak_channel"}
+
+
+def _metrics(row):
+    """Every finite numeric column of one ``units.csv`` row (QC and ``conn_*`` statistics), for the QC filters.
+
+    NaN and inf are left out: they are not JSON, and a unit without a value fails any criterion on it.
+    """
+    out = {}
+    for key, text in row.items():
+        if not key or key in NOT_METRICS:
+            continue
+        value = _number(text)
+        if value is not None and math.isfinite(value):
+            out[key] = value
     return out
 
 
@@ -223,6 +244,7 @@ def scan_session(root_index, root, sid):
         units[uid] = {"id": uid, "quality": q, "area": area, "peak_channel": None, "depth_um": None,
                       "rate_hz": row["rate_hz"] if row else None, "n_stable": row["n_stable"] if row else None,
                       "n_trials": row["n_trials"] if row else None, "full_stable": bool(row and row["full_stable"]),
+                      "metrics": row["metrics"] if row else {},
                       # False: the session's current units table has no such unit (a figure from an older build)
                       "in_units": None if stability is None else row is not None,
                       "relabelled_from": sorted({qq for qq, _a, _e in found if qq and qq != q}),

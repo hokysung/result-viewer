@@ -89,7 +89,25 @@ body.focus #units, body.focus #notes { display: none; }
 .chip:hover { background: var(--hover); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .chip.clear { border-style: dashed; color: var(--muted); }
-.sortbar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 2px; }
+.sortbar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 2px; flex-wrap: wrap; }
+.sortbar .seg { flex-wrap: wrap; }
+/* QC criteria: one row per threshold, all must pass */
+#qc { margin: 4px 8px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+#qc .qchead { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+#qc .qchead .chip { margin-left: auto; }
+#qc .qcrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 56px 28px auto; align-items: center; gap: 4px; padding: 1px 0; font-size: 12px; }
+#qc .qcrow.off .qlbl, #qc .qcrow.off .qn { opacity: .45; }
+#qc .qcrow.missing { opacity: .45; }
+#qc .qlbl { overflow-wrap: anywhere; line-height: 1.15; }
+#qc input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+#qc input[type=number]::-webkit-inner-spin-button, #qc input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#qc .qop { border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 0 5px; min-width: 22px; }
+#qc input[type=number] { width: 100%; min-width: 0; padding: 2px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-size: 12px; }
+#qc .qn { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#qc .qx { border: 0; background: none; color: var(--muted); padding: 0 2px; }
+#qc .qx:hover { color: var(--bad); }
+#qc .qcadd { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+#qc .qcadd select { flex: 1 1 100%; padding: 3px 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-size: 12px; }
 .sortbar .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-right: 1px solid var(--line); background: var(--panel); padding: 3px 8px; font-size: 12px; white-space: nowrap; }

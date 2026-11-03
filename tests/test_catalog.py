@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,18 @@ class CatalogTest(unittest.TestCase):
         self.assertTrue(one["in_units"])
         self.assertFalse(four["in_units"])  # a raster of a unit the current build does not have
         self.assertIsNone(four["rate_hz"])
+
+    def test_metrics_are_the_finite_numeric_columns(self):
+        one, two, three, four = (self.units[i] for i in (1, 2, 3, 4))
+        self.assertEqual(one["metrics"]["conn_pulse_p"], 0.0002)
+        self.assertEqual(one["metrics"]["mean_rate_hz"], 5.5123)
+        self.assertEqual(one["metrics"]["n_stable_trials"], 300)
+        for hidden in ("unit_id", "source_unit_id", "peak_channel", "n_completed_trials", "conn_basis", "quality"):
+            self.assertNotIn(hidden, one["metrics"])
+        self.assertNotIn("conn_pulse_p", two["metrics"])    # nan
+        self.assertNotIn("conn_pulse_p", three["metrics"])  # inf: not JSON
+        self.assertEqual(four["metrics"], {})               # not in the units table
+        json.dumps(self.units, allow_nan=False)
 
     def test_without_a_stability_table(self):
         (self.root / SID / "tables" / "units.csv").unlink()
